@@ -66,6 +66,8 @@ static constexpr int64_t CONCEAL_MARGIN_US = 10000;
 static constexpr uint32_t SYNC_WAIT_MS = 2000;
 /// Extra buffer needed on top of the sender's latency for synchronized playback (250 ms)
 static constexpr uint32_t SYNC_MARGIN_FRAMES = SAMPLE_RATE / 4;
+/// Timestamps of playback reports older than this are not used
+static constexpr int64_t REPORT_MAX_AGE_US = 200000;
 /// The speaker must report played audio within this time, or playback cannot be synchronized
 static constexpr uint32_t PLAYED_REPORT_TIMEOUT_MS = 1000;
 
@@ -76,6 +78,7 @@ static constexpr int32_t SERVO_INNOVATION_CLAMP_US = 1500;
 static constexpr int32_t SERVO_ENGAGE_US = 5000;
 static constexpr int32_t SERVO_DISENGAGE_US = 1500;
 static constexpr uint32_t SERVO_TRIM_INTERVAL = 4;
+static constexpr int32_t SERVO_FAST_US = 10000;
 
 // Unsynchronized playback: the buffer level is kept on target instead
 /// Default buffer level before playback starts (500 ms)
@@ -220,6 +223,10 @@ void AirPlayMediaSource::run_audio_session_() {
       this->reset_playback_();
       // The timeline may jump after a seek, so wait for the next sync packet
       this->anchor_valid_ = false;
+      // Set here rather than by the RTSP task, so that audio from before the flush cannot switch back to playing
+      uint8_t playing = SESSION_STATE_PLAYING;
+      if (this->session_state_.compare_exchange_strong(playing, SESSION_STATE_PAUSED, std::memory_order_acq_rel))
+        this->enable_loop_soon_any_context();
     }
 
     if (ready > 0) {
@@ -393,7 +400,7 @@ void AirPlayMediaSource::handle_audio_packet_(uint16_t seq, uint32_t rtp, const 
   const int32_t new_ahead = static_cast<int16_t>(seq - this->highest_seq_);
   if (new_ahead > 0) {
     // Mark the packets in between as missing; retry_resends_() asks for them after a short delay
-    for (int32_t i = 1; i < new_ahead; i++) {
+    for (int32_t i = 1; i < std::min(new_ahead, ahead + 1); i++) {
       PacketSlot &gap = this->slots_[(this->head_slot_ + static_cast<uint32_t>(ahead - i)) % this->slot_count_];
       gap.valid = false;
       gap.missing_since_ms = now;
@@ -568,6 +575,13 @@ uint32_t AirPlayMediaSource::buffered_packets_() const {
 
 void AirPlayMediaSource::advance_head_() {
   PacketSlot &slot = this->slots_[this->head_slot_];
+  // Track the timestamp of the next packet, so that a missing one can still be timed
+  if (slot.valid && slot.seq == this->next_seq_) {
+    this->next_rtp_ = slot.rtp + slot.frames;
+    this->have_next_rtp_ = true;
+  } else if (this->have_next_rtp_) {
+    this->next_rtp_ += FRAMES_PER_PACKET;
+  }
   slot.valid = false;
   slot.missing_since_ms = 0;
   this->head_slot_ = (this->head_slot_ + 1) % this->slot_count_;
@@ -587,6 +601,8 @@ bool AirPlayMediaSource::rtp_to_local_us_(uint32_t rtp, int64_t *local_us) const
 bool AirPlayMediaSource::write_pending_output_() {
   if (this->output_offset_ >= this->output_length_)
     return true;
+  if (this->reset_frame_counts_.load(std::memory_order_acquire))
+    return false;  // Became active just now: playback_step_() restarts the counts first
   const auto *output = reinterpret_cast<const uint8_t *>(this->output_buffer_.get());
   const size_t written = this->write_output(output + this->output_offset_, this->output_length_ - this->output_offset_,
                                             0, this->stream_info_);
@@ -649,6 +665,7 @@ void AirPlayMediaSource::playback_step_() {
     this->bytes_written_ = 0;
     this->first_write_ms_ = 0;
     this->frames_played_.store(0, std::memory_order_relaxed);
+    this->played_timestamp_us_.store(0, std::memory_order_relaxed);
   }
 
   if (!this->played_reports_missing_ && this->first_write_ms_ != 0 &&
@@ -740,16 +757,24 @@ bool AirPlayMediaSource::synced_step_() {
   const int64_t queued_us = frames_to_us(this->speaker_queued_frames_());
   if (queued_us >= MAX_SPEAKER_QUEUE_US)
     return false;
+  // The speaker reports played audio in chunks. The audio it reported last ended at the report's timestamp,
+  // and the queued audio follows on from there, which is more precise than counting from now.
+  const int64_t now = esp_timer_get_time();
+  int64_t heard_us = now + queued_us;
+  const int64_t reported_at = this->played_timestamp_us_.load(std::memory_order_relaxed);
+  if (queued_us > 0 && reported_at != 0 && now - reported_at < REPORT_MAX_AGE_US)
+    heard_us = std::max(now, reported_at + queued_us);
   // Positive: the packet would be heard too early; negative: too late
-  const int64_t error_us = target_us - (esp_timer_get_time() + queued_us);
+  const int64_t error_us = target_us - heard_us;
   if (error_us > START_WINDOW_US)
     return false;
 
   if (!present) {
     if (error_us > CONCEAL_MARGIN_US)
       return false;  // Still time for the retransmission
-    this->silence_pending_frames_ = FRAMES_PER_PACKET;
-    this->next_rtp_ += FRAMES_PER_PACKET;
+    // Fill the gap with silence, unless it is long past already
+    if (error_us > -EARLY_LATE_THRESHOLD_US)
+      this->silence_pending_frames_ = FRAMES_PER_PACKET;
     this->lost_packets_++;
     this->advance_head_();
     return true;
@@ -757,8 +782,6 @@ bool AirPlayMediaSource::synced_step_() {
 
   if (error_us < -EARLY_LATE_THRESHOLD_US) {
     this->late_packets_++;
-    this->next_rtp_ = rtp + slot.frames;
-    this->have_next_rtp_ = true;
     this->advance_head_();
     return true;
   }
@@ -781,15 +804,15 @@ bool AirPlayMediaSource::synced_step_() {
   } else if (magnitude < SERVO_DISENGAGE_US) {
     this->servo_engaged_ = false;
   }
+  // Larger errors (e.g. after the clock estimate moved) are corrected on every packet, small ones slowly
+  const uint32_t interval = magnitude > SERVO_FAST_US ? 1 : SERVO_TRIM_INTERVAL;
   int32_t trim = 0;
-  if (this->servo_engaged_ && ++this->trim_counter_ >= SERVO_TRIM_INTERVAL) {
+  if (this->servo_engaged_ && ++this->trim_counter_ >= interval) {
     this->trim_counter_ = 0;
     trim = this->servo_error_us_ > 0 ? 1 : -1;  // Early: repeat a frame; late: drop one
   }
 
   this->queue_packet_output_(slot, trim);
-  this->next_rtp_ = rtp + slot.frames;
-  this->have_next_rtp_ = true;
   this->advance_head_();
   return true;
 }

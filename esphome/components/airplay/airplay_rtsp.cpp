@@ -378,8 +378,7 @@ bool AirPlayMediaSource::process_request_(RTSPConnection &connection, char *requ
     }
   } else if (strcmp(method, "FLUSH") == 0) {
     if (is_owner) {
-      // Set before the flush request, so the audio task's switch back to playing cannot be overwritten
-      this->set_session_state_(SESSION_STATE_PAUSED);
+      // The audio task drops the buffered audio and shows the session as paused
       char rtp_info[96] = "";
       uint32_t seq = 0;
       if (get_header(request, header_length, "RTP-Info", rtp_info, sizeof(rtp_info)) &&

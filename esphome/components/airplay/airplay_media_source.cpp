@@ -37,6 +37,8 @@ static constexpr uint32_t SPARE_SLOTS = 8;
 static constexpr float VOLUME_CHANGE_THRESHOLD = 0.005f;
 
 static constexpr uint32_t MDNS_RETRY_ID = 0;
+static constexpr uint32_t PLAY_RETRY_ID = 1;
+static constexpr uint32_t PLAY_RETRY_MS = 3000;
 static constexpr uint32_t MDNS_RETRY_INTERVAL_MS = 5000;
 
 void AirPlayMediaSource::setup() {
@@ -92,12 +94,13 @@ void AirPlayMediaSource::setup() {
   }
   xEventGroupSetBits(this->audio_events_, AUDIO_EVENT_STOPPED);
 
-  if (!this->audio_task_.create(AirPlayMediaSource::audio_task, "airplay_audio", AUDIO_TASK_STACK_SIZE, this,
+  // The RTSP task comes last: once it runs, senders can connect
+  if (!this->remote_task_.create(AirPlayMediaSource::remote_task, "airplay_remote", REMOTE_TASK_STACK_SIZE, this,
+                                 REMOTE_TASK_PRIORITY, this->task_stack_in_psram_) ||
+      !this->audio_task_.create(AirPlayMediaSource::audio_task, "airplay_audio", AUDIO_TASK_STACK_SIZE, this,
                                 AUDIO_TASK_PRIORITY, this->task_stack_in_psram_) ||
       !this->rtsp_task_.create(AirPlayMediaSource::rtsp_task, "airplay_rtsp", RTSP_TASK_STACK_SIZE, this,
-                               RTSP_TASK_PRIORITY, this->task_stack_in_psram_) ||
-      !this->remote_task_.create(AirPlayMediaSource::remote_task, "airplay_remote", REMOTE_TASK_STACK_SIZE, this,
-                                 REMOTE_TASK_PRIORITY, this->task_stack_in_psram_)) {
+                               RTSP_TASK_PRIORITY, this->task_stack_in_psram_)) {
     ESP_LOGE(TAG, "Failed to create tasks");
     this->mark_failed();
     return;
@@ -172,6 +175,11 @@ void AirPlayMediaSource::loop() {
           // Ask the orchestrator to switch to this source; it then calls play_uri()
           this->play_requested_ = true;
           this->request_play_uri_(PLAY_URI);
+          // Ask again if the orchestrator dropped the request
+          this->set_timeout(PLAY_RETRY_ID, PLAY_RETRY_MS, [this]() {
+            this->play_requested_ = false;
+            this->enable_loop();
+          });
         }
       } else if (desired == SESSION_STATE_PLAYING && state == media_source::MediaSourceState::PAUSED) {
         this->set_state_(media_source::MediaSourceState::PLAYING);
@@ -261,8 +269,10 @@ bool AirPlayMediaSource::play_uri(const std::string &uri) {
     return true;
   }
   this->reset_frame_counts_.store(true, std::memory_order_release);
-  this->set_state_(desired == SESSION_STATE_PAUSED ? media_source::MediaSourceState::PAUSED
-                                                   : media_source::MediaSourceState::PLAYING);
+  // Report playing first even when paused: the orchestrator only makes a source active when it starts playing
+  this->set_state_(media_source::MediaSourceState::PLAYING);
+  if (desired == SESSION_STATE_PAUSED)
+    this->set_state_(media_source::MediaSourceState::PAUSED);
   return true;
 }
 
@@ -300,10 +310,12 @@ void AirPlayMediaSource::handle_command(media_source::MediaSourceCommand command
 // THREAD CONTEXT: Main loop
 void AirPlayMediaSource::notify_volume_changed(float volume) {
   // Move the sender's volume slider along, unless the change came from the sender
-  const float sender_volume = this->sender_volume_.load(std::memory_order_relaxed);
+  float sender_volume = this->sender_volume_.load(std::memory_order_relaxed);
   if (sender_volume < 0.0f || std::fabs(volume - sender_volume) < VOLUME_CHANGE_THRESHOLD)
     return;
-  this->sender_volume_.store(volume, std::memory_order_relaxed);
+  // Fails if the session ended in the meantime
+  if (!this->sender_volume_.compare_exchange_strong(sender_volume, volume, std::memory_order_relaxed))
+    return;
   // -30 to 0 dB, and -144 for silence
   const float db = volume < VOLUME_CHANGE_THRESHOLD ? -144.0f : (volume - 1.0f) * 30.0f;
   this->remote_volume_db_.store(db, std::memory_order_relaxed);
@@ -312,6 +324,7 @@ void AirPlayMediaSource::notify_volume_changed(float volume) {
 
 // THREAD CONTEXT: Speaker playback callback
 void AirPlayMediaSource::notify_audio_played(uint32_t frames, int64_t timestamp) {
+  this->played_timestamp_us_.store(timestamp, std::memory_order_relaxed);
   this->frames_played_.fetch_add(frames, std::memory_order_relaxed);
 }
 

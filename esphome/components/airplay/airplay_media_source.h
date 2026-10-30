@@ -245,6 +245,7 @@ class AirPlayMediaSource final : public Component, public media_source::MediaSou
   // Volume last set by the sender, 0 to 1, to avoid sending it back
   std::atomic<float> sender_volume_{-1.0f};
   std::atomic<uint32_t> frames_played_{0};
+  std::atomic<int64_t> played_timestamp_us_{0};
   // Set when this source becomes active, so the audio task restarts its count of written frames together with
   // the orchestrator's count of played frames
   std::atomic<bool> reset_frame_counts_{false};

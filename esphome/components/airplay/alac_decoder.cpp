@@ -39,8 +39,10 @@ inline uint32_t clz32(uint32_t value) { return value == 0 ? 32 : static_cast<uin
 
 inline int32_t sign_of(int32_t value) { return (value > 0) - (value < 0); }
 
-/// Sign-extends the low `bits` bits of a value
+/// Sign-extends the low (32 - shift) bits of a value
 inline int32_t sign_extend(int32_t value, uint32_t shift) {
+  if (shift >= 32)
+    return 0;  // No bits left; only possible with invalid stream parameters
   return static_cast<int32_t>(static_cast<uint32_t>(value) << shift) >> shift;
 }
 
@@ -63,7 +65,7 @@ class BitReader {
 
   /// Reads up to 32 bits
   uint32_t read(uint32_t bits) {
-    if (bits == 0)
+    if (bits == 0 || bits > 32)
       return 0;
     uint32_t value = this->peek32() >> (32 - bits);
     this->position_ += bits;
@@ -88,6 +90,8 @@ uint32_t read_rice(BitReader &reader, uint32_t m, uint32_t k, uint32_t escape_bi
     return reader.read(escape_bits);
   }
   reader.skip(prefix + 1);
+  if (k == 0)
+    return prefix * m;
   const uint32_t value = reader.peek32() >> (32 - k);
   if (value < 2) {
     reader.skip(k - 1);

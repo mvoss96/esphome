@@ -2,18 +2,21 @@
 
 #ifdef USE_ESP32
 
+#include "esphome/core/hal.h"
+#include "esphome/core/helpers.h"
 #include "esphome/core/log.h"
 
 #ifdef USE_WIFI
 #include "esphome/components/wifi/wifi_component.h"
 #endif
 
+#include <esp_heap_caps.h>
 #include <mdns.h>
 
 #include <algorithm>
 #include <cinttypes>
 #include <cmath>
-#include <cstdio>
+#include <cstring>
 
 namespace esphome::airplay {
 
@@ -22,17 +25,15 @@ ESPHOME_LOG_TAG(TAG, "airplay");
 static constexpr char URI_PREFIX[] = "airplay://";
 static constexpr char PLAY_URI[] = "airplay://current";
 
-static constexpr uint32_t RTSP_TASK_STACK_SIZE = 8192;
-static constexpr uint32_t AUDIO_TASK_STACK_SIZE = 6144;
+// The RSA operations of a new session need most of this stack
+static constexpr uint32_t AIRPLAY_TASK_STACK_SIZE = 8192;
 static constexpr uint32_t REMOTE_TASK_STACK_SIZE = 4096;
 static constexpr UBaseType_t REMOTE_TASK_PRIORITY = 2;
-static constexpr UBaseType_t RTSP_TASK_PRIORITY = 3;
-static constexpr UBaseType_t AUDIO_TASK_PRIORITY = 5;
+static constexpr UBaseType_t AIRPLAY_TASK_PRIORITY = 5;
+static constexpr uint32_t LISTEN_RETRY_MS = 1000;
+/// Longest wait for network traffic; the receiver shortens it while a session plays
+static constexpr uint32_t RUN_INTERVAL_MS = 100;
 
-/// Buffer level for unsynchronized playback, at most 500 ms
-static constexpr uint32_t MAX_FILL_TARGET_FRAMES = SAMPLE_RATE / 2;
-/// Spare slots for packets that arrive early or out of order
-static constexpr uint32_t SPARE_SLOTS = 8;
 /// The sender's volume slider is not updated for changes smaller than this
 static constexpr float VOLUME_CHANGE_THRESHOLD = 0.005f;
 
@@ -41,66 +42,73 @@ static constexpr uint32_t PLAY_RETRY_ID = 1;
 static constexpr uint32_t PLAY_RETRY_MS = 3000;
 static constexpr uint32_t MDNS_RETRY_INTERVAL_MS = 5000;
 
+static constexpr size_t MAX_TXT_RECORDS = 20;
+
+static void library_log(::airplay::LogLevel level, const char *message) {
+  switch (level) {
+    case ::airplay::LogLevel::LOG_LEVEL_ERROR:
+      ESP_LOGE(TAG, "%s", message);
+      break;
+    case ::airplay::LogLevel::LOG_LEVEL_WARN:
+      ESP_LOGW(TAG, "%s", message);
+      break;
+    case ::airplay::LogLevel::LOG_LEVEL_INFO:
+      ESP_LOGI(TAG, "%s", message);
+      break;
+    case ::airplay::LogLevel::LOG_LEVEL_DEBUG:
+      ESP_LOGD(TAG, "%s", message);
+      break;
+    default:
+      ESP_LOGV(TAG, "%s", message);
+      break;
+  }
+}
+
+static void *allocate_buffer(size_t size) {
+  // The jitter buffer goes to PSRAM when there is some; the receiver touches it only from its own task
+  return heap_caps_malloc_prefer(size, 2, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT, MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
+}
+
 void AirPlayMediaSource::setup() {
-  get_mac_address_raw(this->mac_);
+#if ESPHOME_LOG_LEVEL >= ESPHOME_LOG_LEVEL_VERBOSE
+  ::airplay::set_log_handler(library_log, ::airplay::LogLevel::LOG_LEVEL_VERBOSE);
+#elif ESPHOME_LOG_LEVEL >= ESPHOME_LOG_LEVEL_DEBUG
+  ::airplay::set_log_handler(library_log, ::airplay::LogLevel::LOG_LEVEL_DEBUG);
+#else
+  ::airplay::set_log_handler(library_log, ::airplay::LogLevel::LOG_LEVEL_INFO);
+#endif
 
   if (!this->crypto_.init()) {
     ESP_LOGE(TAG, "Failed to load the RSA key");
     this->mark_failed();
     return;
   }
-  if (!this->decoder_.init(FRAMES_PER_PACKET)) {
-    ESP_LOGE(TAG, "Failed to allocate the decoder");
-    this->mark_failed();
-    return;
-  }
-  mbedtls_aes_init(&this->aes_);
 
-  // Synchronized playback holds the sender's whole latency (about 2.25 s) in this buffer. Unsynchronized
+  ::airplay::ReceiverConfig config;
+  config.name = this->name_;
+  get_mac_address_raw(config.mac);
+  // Synchronized playback holds the sender's whole latency (about 2.25 s) in the buffer. Unsynchronized
   // playback fills three quarters of it, up to 500 ms, before it starts.
-  const uint32_t buffer_frames = this->buffer_duration_ms_ * SAMPLE_RATE / 1000;
-  this->slot_count_ = (buffer_frames + FRAMES_PER_PACKET - 1) / FRAMES_PER_PACKET + SPARE_SLOTS;
-  this->fill_target_frames_ = std::min(MAX_FILL_TARGET_FRAMES, buffer_frames * 3 / 4);
+  config.buffer_ms = this->buffer_duration_ms_;
+#ifdef USE_AIRPLAY_METADATA
+  config.metadata = true;
+#endif
+  config.allocate = allocate_buffer;
+  config.deallocate = heap_caps_free;
+  this->receiver_ = std::make_unique<::airplay::Receiver>(config, this->crypto_, this->runner_, *this, this);
 
-  RAMAllocator<PacketSlot> slot_allocator;
-  this->slots_ = slot_allocator.make_unique_array_for_overwrite(this->slot_count_);
-  RAMAllocator<uint8_t> byte_allocator(RAMAllocator<uint8_t>::PREFER_INTERNAL);
-  this->packet_buffer_ = byte_allocator.make_unique_array_for_overwrite(PACKET_BUFFER_SIZE);
-  this->decrypt_buffer_ = byte_allocator.make_unique_array_for_overwrite(PACKET_BUFFER_SIZE);
-  // One spare frame, used when a frame is repeated to correct clock drift
-  RAMAllocator<int16_t> sample_allocator(RAMAllocator<int16_t>::PREFER_INTERNAL);
-  this->output_buffer_ = sample_allocator.make_unique_array_for_overwrite((FRAMES_PER_PACKET + 1) * NUM_CHANNELS);
-  RAMAllocator<char> char_allocator(RAMAllocator<char>::PREFER_INTERNAL);
-  // One extra byte per connection so that headers and body can be null terminated in place
-  this->rtsp_buffers_ = char_allocator.make_unique_array_for_overwrite(MAX_RTSP_CONNECTIONS * (RTSP_BUFFER_SIZE + 1));
-
-  if (!this->slots_ || !this->packet_buffer_ || !this->decrypt_buffer_ || !this->output_buffer_ ||
-      !this->rtsp_buffers_) {
+  this->lock_ = xSemaphoreCreateMutex();
+  if (this->lock_ == nullptr || !this->receiver_->begin()) {
     ESP_LOGE(TAG, "Failed to allocate buffers");
     this->mark_failed();
     return;
   }
-  for (uint32_t i = 0; i < this->slot_count_; i++)
-    this->slots_[i].valid = false;
-  for (size_t i = 0; i < MAX_RTSP_CONNECTIONS; i++)
-    this->connections_[i].buffer = &this->rtsp_buffers_[i * (RTSP_BUFFER_SIZE + 1)];
 
-  this->audio_events_ = xEventGroupCreate();
-  this->remote_lock_ = xSemaphoreCreateMutex();
-  if (this->audio_events_ == nullptr || this->remote_lock_ == nullptr) {
-    ESP_LOGE(TAG, "Failed to create synchronization objects");
-    this->mark_failed();
-    return;
-  }
-  xEventGroupSetBits(this->audio_events_, AUDIO_EVENT_STOPPED);
-
-  // The RTSP task comes last: once it runs, senders can connect
+  // The AirPlay task comes last: once it runs, senders can connect
   if (!this->remote_task_.create(AirPlayMediaSource::remote_task, "airplay_remote", REMOTE_TASK_STACK_SIZE, this,
                                  REMOTE_TASK_PRIORITY, this->task_stack_in_psram_) ||
-      !this->audio_task_.create(AirPlayMediaSource::audio_task, "airplay_audio", AUDIO_TASK_STACK_SIZE, this,
-                                AUDIO_TASK_PRIORITY, this->task_stack_in_psram_) ||
-      !this->rtsp_task_.create(AirPlayMediaSource::rtsp_task, "airplay_rtsp", RTSP_TASK_STACK_SIZE, this,
-                               RTSP_TASK_PRIORITY, this->task_stack_in_psram_)) {
+      !this->airplay_task_.create(AirPlayMediaSource::airplay_task, "airplay", AIRPLAY_TASK_STACK_SIZE, this,
+                                  AIRPLAY_TASK_PRIORITY, this->task_stack_in_psram_)) {
     ESP_LOGE(TAG, "Failed to create tasks");
     this->mark_failed();
     return;
@@ -110,34 +118,25 @@ void AirPlayMediaSource::setup() {
   this->disable_loop();
 }
 
+void AirPlayMediaSource::airplay_task(void *params) {
+  auto *self = static_cast<AirPlayMediaSource *>(params);
+  while (!self->runner_.begin(*self->receiver_, self->port_))
+    vTaskDelay(pdMS_TO_TICKS(LISTEN_RETRY_MS));
+  while (true)
+    self->runner_.run_once(RUN_INTERVAL_MS);
+}
+
 void AirPlayMediaSource::register_mdns_service_() {
   char instance[64];
-  snprintf(instance, sizeof(instance), "%02X%02X%02X%02X%02X%02X@%s", this->mac_[0], this->mac_[1], this->mac_[2],
-           this->mac_[3], this->mac_[4], this->mac_[5], this->name_);
+  this->receiver_->service_instance_name(instance, sizeof(instance));
+  size_t count = 0;
+  const ::airplay::TxtRecord *records = this->receiver_->txt_records(&count);
+  mdns_txt_item_t txt[MAX_TXT_RECORDS];
+  count = std::min(count, MAX_TXT_RECORDS);
+  for (size_t i = 0; i < count; i++)
+    txt[i] = mdns_txt_item_t{records[i].key, records[i].value};
 
-  // cn: codecs (0 = PCM, 1 = ALAC), et: encryption types (0 = none, 1 = RSA)
-  mdns_txt_item_t txt[] = {
-      {"txtvers", "1"},
-      {"ch", "2"},
-      {"cn", "0,1"},
-      {"et", "0,1"},
-      {"ek", "1"},
-      {"sv", "false"},
-      {"da", "true"},
-      {"sr", "44100"},
-      {"ss", "16"},
-      {"pw", "false"},
-      {"sm", "false"},
-      {"tp", "UDP"},
-      {"vn", "3"},
-      {"vs", "105.1"},
-      {"am", "ESPHome"},
-#ifdef USE_AIRPLAY_METADATA
-      // Ask senders for track details (0 = text)
-      {"md", "0"},
-#endif
-  };
-  const esp_err_t err = mdns_service_add(instance, "_raop", "_tcp", this->port_, txt, sizeof(txt) / sizeof(txt[0]));
+  const esp_err_t err = mdns_service_add(instance, "_raop", "_tcp", this->port_, txt, count);
   if (err != ESP_OK) {
     ESP_LOGW(TAG, "Failed to register the mDNS service, retrying: %s", esp_err_to_name(err));
     this->set_timeout(MDNS_RETRY_ID, MDNS_RETRY_INTERVAL_MS, [this]() { this->register_mdns_service_(); });
@@ -151,25 +150,25 @@ void AirPlayMediaSource::dump_config() {
                 "AirPlay Media Source:\n"
                 "  Name: %s\n"
                 "  Port: %u\n"
-                "  Buffer duration: %" PRIu32 " ms (%" PRIu32 " packets)\n"
-                "  Task stack in PSRAM: %s",
-                this->name_, this->port_, this->buffer_duration_ms_, this->slot_count_,
-                YESNO(this->task_stack_in_psram_));
+                "  Buffer duration: %" PRIu32 " ms\n"
+                "  Task stack in PSRAM: %s\n"
+                "  airplay-cpp: " AIRPLAY_CPP_VERSION,
+                this->name_, this->port_, this->buffer_duration_ms_, YESNO(this->task_stack_in_psram_));
 }
 
-// THREAD CONTEXT: Main loop. Woken by set_session_state_() from the RTSP and audio tasks.
+// THREAD CONTEXT: Main loop. Woken by the AirPlay task when the session changes.
 void AirPlayMediaSource::loop() {
-  const auto desired = static_cast<SessionState>(this->session_state_.load(std::memory_order_acquire));
+  const auto desired = static_cast<::airplay::SessionState>(this->session_state_.load(std::memory_order_acquire));
   const media_source::MediaSourceState state = this->get_state();
 
   switch (desired) {
-    case SESSION_STATE_NONE:
+    case ::airplay::SessionState::NONE:
       this->play_requested_ = false;
       if (state != media_source::MediaSourceState::IDLE)
         this->set_state_(media_source::MediaSourceState::IDLE);
       break;
-    case SESSION_STATE_PLAYING:
-    case SESSION_STATE_PAUSED:
+    case ::airplay::SessionState::PLAYING:
+    case ::airplay::SessionState::PAUSED:
       if (state == media_source::MediaSourceState::IDLE) {
         if (!this->play_requested_) {
           // Ask the orchestrator to switch to this source; it then calls play_uri()
@@ -181,14 +180,14 @@ void AirPlayMediaSource::loop() {
             this->enable_loop();
           });
         }
-      } else if (desired == SESSION_STATE_PLAYING && state == media_source::MediaSourceState::PAUSED) {
+      } else if (desired == ::airplay::SessionState::PLAYING && state == media_source::MediaSourceState::PAUSED) {
         this->set_state_(media_source::MediaSourceState::PLAYING);
-      } else if (desired == SESSION_STATE_PAUSED && state == media_source::MediaSourceState::PLAYING) {
+      } else if (desired == ::airplay::SessionState::PAUSED && state == media_source::MediaSourceState::PLAYING) {
         this->set_state_(media_source::MediaSourceState::PAUSED);
       }
       break;
   }
-  this->set_wifi_streaming_(desired != SESSION_STATE_NONE);
+  this->set_wifi_streaming_(desired != ::airplay::SessionState::NONE);
 #ifdef USE_AIRPLAY_METADATA
   if (this->metadata_changed_.exchange(false, std::memory_order_acq_rel))
     this->publish_metadata_();
@@ -197,21 +196,12 @@ void AirPlayMediaSource::loop() {
 }
 
 #ifdef USE_AIRPLAY_METADATA
-// THREAD CONTEXT: RTSP task
-void AirPlayMediaSource::set_metadata_(const Metadata &metadata) {
-  xSemaphoreTake(this->remote_lock_, portMAX_DELAY);
-  this->metadata_ = metadata;
-  xSemaphoreGive(this->remote_lock_);
-  this->metadata_changed_.store(true, std::memory_order_release);
-  this->enable_loop_soon_any_context();
-}
-
 // THREAD CONTEXT: Main loop
 void AirPlayMediaSource::publish_metadata_() {
-  Metadata metadata;
-  xSemaphoreTake(this->remote_lock_, portMAX_DELAY);
+  ::airplay::Metadata metadata;
+  xSemaphoreTake(this->lock_, portMAX_DELAY);
   metadata = this->metadata_;
-  xSemaphoreGive(this->remote_lock_);
+  xSemaphoreGive(this->lock_);
   if (this->title_text_sensor_ != nullptr)
     this->title_text_sensor_->publish_state(metadata.title);
   if (this->artist_text_sensor_ != nullptr)
@@ -248,10 +238,62 @@ void AirPlayMediaSource::set_wifi_streaming_(bool streaming) {
 #endif
 }
 
-// THREAD CONTEXT: RTSP or audio task
-void AirPlayMediaSource::set_session_state_(SessionState state) {
-  if (this->session_state_.exchange(state, std::memory_order_acq_rel) != state)
-    this->enable_loop_soon_any_context();
+// THREAD CONTEXT: AirPlay task
+size_t AirPlayMediaSource::write(const int16_t *samples, size_t frames) {
+  // Writes nothing unless this source is the active one
+  const size_t written = this->write_output(reinterpret_cast<const uint8_t *>(samples),
+                                            frames * ::airplay::BYTES_PER_FRAME, 0, this->stream_info_);
+  return written / ::airplay::BYTES_PER_FRAME;
+}
+
+// THREAD CONTEXT: AirPlay task
+void AirPlayMediaSource::on_session_state(::airplay::SessionState state) {
+  if (state == ::airplay::SessionState::NONE) {
+    this->sender_volume_.store(-1.0f, std::memory_order_relaxed);
+    // Keep the remote control details for a while, so that a paused sender can be resumed from here
+    xSemaphoreTake(this->lock_, portMAX_DELAY);
+    this->remote_.session_active = false;
+    this->remote_.session_end_ms = millis();
+    xSemaphoreGive(this->lock_);
+  }
+  this->session_state_.store(static_cast<uint8_t>(state), std::memory_order_release);
+  this->enable_loop_soon_any_context();
+}
+
+// THREAD CONTEXT: AirPlay task
+void AirPlayMediaSource::on_volume(float volume) {
+  this->sender_volume_.store(volume, std::memory_order_relaxed);
+  this->request_volume_(volume);
+}
+
+// THREAD CONTEXT: AirPlay task
+void AirPlayMediaSource::on_mute(bool muted) { this->request_mute_(muted); }
+
+// THREAD CONTEXT: AirPlay task
+void AirPlayMediaSource::on_metadata(const ::airplay::Metadata &metadata) {
+#ifdef USE_AIRPLAY_METADATA
+  xSemaphoreTake(this->lock_, portMAX_DELAY);
+  this->metadata_ = metadata;
+  xSemaphoreGive(this->lock_);
+  this->metadata_changed_.store(true, std::memory_order_release);
+  this->enable_loop_soon_any_context();
+#endif
+}
+
+// THREAD CONTEXT: AirPlay task. Remote control details arrive with the requests of the session owner.
+void AirPlayMediaSource::on_remote_target(const ::airplay::RemoteTarget &target) {
+  xSemaphoreTake(this->lock_, portMAX_DELAY);
+  RemoteState &remote = this->remote_;
+  const bool changed =
+      std::strcmp(remote.target.dacp_id, target.dacp_id) != 0 || remote.target.address != target.address;
+  remote.target = target;
+  if (changed)
+    remote.port = 0;
+  remote.session_active = true;
+  xSemaphoreGive(this->lock_);
+  // Look up the port now, so that the first command does not have to wait for it
+  if (changed)
+    this->send_remote_request_(REMOTE_REQUEST_DISCOVER);
 }
 
 bool AirPlayMediaSource::can_handle(const std::string &uri) const { return uri.starts_with(URI_PREFIX); }
@@ -262,16 +304,17 @@ bool AirPlayMediaSource::play_uri(const std::string &uri) {
   if (this->is_failed() || !this->can_handle(uri))
     return false;
 
-  const auto desired = static_cast<SessionState>(this->session_state_.load(std::memory_order_acquire));
-  if (desired == SESSION_STATE_NONE) {
+  const auto desired = static_cast<::airplay::SessionState>(this->session_state_.load(std::memory_order_acquire));
+  if (desired == ::airplay::SessionState::NONE) {
     // Accept and stay idle. Failing would make the orchestrator retry endlessly when repeat is enabled.
     ESP_LOGD(TAG, "No AirPlay sender is connected");
     return true;
   }
-  this->reset_frame_counts_.store(true, std::memory_order_release);
+  // The orchestrator restarts its count of played frames right after this call
+  this->receiver_->request_output_restart();
   // Report playing first even when paused: the orchestrator only makes a source active when it starts playing
   this->set_state_(media_source::MediaSourceState::PLAYING);
-  if (desired == SESSION_STATE_PAUSED)
+  if (desired == ::airplay::SessionState::PAUSED)
     this->set_state_(media_source::MediaSourceState::PAUSED);
   return true;
 }
@@ -281,11 +324,14 @@ void AirPlayMediaSource::handle_command(media_source::MediaSourceCommand command
   uint8_t request = 0;
   switch (command) {
     case media_source::MediaSourceCommand::STOP:
-      if (this->session_state_.load(std::memory_order_acquire) == SESSION_STATE_NONE) {
+      if (this->session_state_.load(std::memory_order_acquire) == static_cast<uint8_t>(::airplay::SessionState::NONE)) {
         this->play_requested_ = false;
         this->set_state_(media_source::MediaSourceState::IDLE);
       } else {
-        this->disconnect_requested_.store(true, std::memory_order_release);
+        ESP_LOGI(TAG, "Disconnecting the sender");
+        // Pause the sender too, so it does not switch to its own speaker and keep playing there
+        this->send_remote_request_(REMOTE_REQUEST_PAUSE);
+        this->receiver_->request_disconnect();
       }
       return;
     case media_source::MediaSourceCommand::PLAY:
@@ -316,16 +362,14 @@ void AirPlayMediaSource::notify_volume_changed(float volume) {
   // Fails if the session ended in the meantime
   if (!this->sender_volume_.compare_exchange_strong(sender_volume, volume, std::memory_order_relaxed))
     return;
-  // -30 to 0 dB, and -144 for silence
-  const float db = volume < VOLUME_CHANGE_THRESHOLD ? -144.0f : (volume - 1.0f) * 30.0f;
-  this->remote_volume_db_.store(db, std::memory_order_relaxed);
+  this->remote_volume_.store(volume, std::memory_order_relaxed);
   this->send_remote_request_(REMOTE_REQUEST_VOLUME);
 }
 
 // THREAD CONTEXT: Speaker playback callback
 void AirPlayMediaSource::notify_audio_played(uint32_t frames, int64_t timestamp) {
-  this->played_timestamp_us_.store(timestamp, std::memory_order_relaxed);
-  this->frames_played_.fetch_add(frames, std::memory_order_relaxed);
+  if (this->receiver_ != nullptr)
+    this->receiver_->notify_played(frames, timestamp);
 }
 
 }  // namespace esphome::airplay

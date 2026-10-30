@@ -25,6 +25,10 @@ AirPlayMediaSource = airplay_ns.class_(
     "AirPlayMediaSource", cg.Component, media_source.MediaSource
 )
 
+# The AirPlay protocol is handled by the airplay-cpp library
+AIRPLAY_CPP_REPO = "https://github.com/mvoss96/airplay-cpp.git"
+AIRPLAY_CPP_VERSION = "b082b6f9701d8fe468d5292be7bf40c174908d5a"
+
 # Room for a burst of audio packets between two reads of a UDP socket
 UDP_RECEIVE_QUEUE_SIZE = 32
 
@@ -108,6 +112,9 @@ async def to_code(config: ConfigType) -> None:
         cg.add(var.set_task_stack_in_psram(True))
         psram.request_external_task_stack()
 
+    esp32.add_idf_component(
+        name="mvoss96/airplay-cpp", repo=AIRPLAY_CPP_REPO, ref=AIRPLAY_CPP_VERSION
+    )
     esp32.add_idf_sdkconfig_option(
         "CONFIG_LWIP_UDP_RECVMBOX_SIZE", UDP_RECEIVE_QUEUE_SIZE
     )

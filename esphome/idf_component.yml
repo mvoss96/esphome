@@ -91,6 +91,10 @@ dependencies:
     version: 0.3.5
     rules:
       - if: "target in [esp32, esp32s2, esp32s3, esp32c6, esp32p4]"
+  # airplay
+  mvoss96/airplay-cpp:
+    git: https://github.com/mvoss96/airplay-cpp.git
+    version: b082b6f9701d8fe468d5292be7bf40c174908d5a
   espressif/mqtt:
     version: "1.0.0"
     rules:

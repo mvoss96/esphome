@@ -266,6 +266,16 @@ bool AirPlayImage::decode_() {
     ok = this->sink_.end_decode() && this->sink_.decoded_into(target);
   // Lets go of the frame and ends a failed decode; the decoder is kept for the next image
   this->sink_.release();
+  if (!this->encoded_png_) {
+    // Where the JPEG ends: some senders pad the image, a cut off image has no end marker
+    size_t end = size;
+    while (end >= 2 && !(this->encoded_[end - 2] == 0xFF && this->encoded_[end - 1] == 0xD9))
+      end--;
+    if (end != size) {
+      ESP_LOGD(TAG, "JPEG end marker at byte %zu of %zu%s", end, size,
+               end < 2 ? LOG_STR_LITERAL(" (none: the image is cut off)") : LOG_STR_LITERAL(""));
+    }
+  }
   if (!ok)
     return false;
   this->decoded_width_ = width;

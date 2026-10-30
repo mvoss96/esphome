@@ -4,7 +4,6 @@
 
 #ifdef USE_ESP32
 
-#include "esphome/components/audio/audio.h"
 #include "esphome/components/media_source/media_source.h"
 #include "esphome/core/component.h"
 #include "esphome/core/static_task.h"
@@ -12,8 +11,6 @@
 #ifdef USE_AIRPLAY_METADATA
 #include "esphome/components/text_sensor/text_sensor.h"
 #endif
-
-#include <airplay.h>
 
 #include <freertos/FreeRTOS.h>
 #include <freertos/semphr.h>
@@ -25,15 +22,16 @@
 
 namespace esphome::airplay {
 
+// Connects the airplay-cpp library to this component. Defined in the .cpp file only: the library's namespace is also
+// called airplay, and every component header ends up in the generated main.cpp next to "using namespace esphome".
+class AirPlayBridge;
+
 /// AirPlay 1 (RAOP) receiver that feeds the received audio to a media player as a media source. The protocol is
 /// handled by the airplay-cpp library; this class connects it to the media source, mDNS, Wi-Fi and text sensors.
-class AirPlayMediaSource final : public Component,
-                                 public media_source::MediaSource,
-                                 public ::airplay::AudioSink,
-                                 public ::airplay::Listener {
+class AirPlayMediaSource final : public Component, public media_source::MediaSource {
  public:
-  AirPlayMediaSource(const char *name, uint16_t port, uint32_t buffer_duration_ms)
-      : name_(name), buffer_duration_ms_(buffer_duration_ms), port_(port) {}
+  AirPlayMediaSource(const char *name, uint16_t port, uint32_t buffer_duration_ms);
+  ~AirPlayMediaSource() override;
 
   void setup() override;
   void loop() override;
@@ -58,17 +56,9 @@ class AirPlayMediaSource final : public Component,
   void notify_volume_changed(float volume) override;
   void notify_audio_played(uint32_t frames, int64_t timestamp) override;
 
-  // airplay::AudioSink, called by the AirPlay task
-  size_t write(const int16_t *samples, size_t frames) override;
-
-  // airplay::Listener, called by the AirPlay task
-  void on_session_state(::airplay::SessionState state) override;
-  void on_volume(float volume) override;
-  void on_mute(bool muted) override;
-  void on_metadata(const ::airplay::Metadata &metadata) override;
-  void on_remote_target(const ::airplay::RemoteTarget &target) override;
-
  protected:
+  friend class AirPlayBridge;
+
   /// Requests to the remote control task, sent as bits of an atomic
   enum RemoteRequest : uint8_t {
     REMOTE_REQUEST_DISCOVER = 1 << 0,
@@ -79,35 +69,34 @@ class AirPlayMediaSource final : public Component,
     REMOTE_REQUEST_VOLUME = 1 << 5,
   };
 
-  /// The sender's remote control (DACP) details, shared between the AirPlay and remote control tasks
-  struct RemoteState {
-    ::airplay::RemoteTarget target;
-    uint16_t port;  // 0 until found through mDNS
-    bool session_active;
-    uint32_t session_end_ms;
+  /// Session state, as airplay::SessionState
+  enum SessionState : uint8_t {
+    SESSION_STATE_NONE = 0,
+    SESSION_STATE_PLAYING,
+    SESSION_STATE_PAUSED,
   };
 
-  // AirPlay task: drives the receiver (airplay_media_source.cpp)
   static void airplay_task(void *params);
-
-  // Remote control task (airplay_remote.cpp)
   static void remote_task(void *params);
-  void remote_task_loop_();
   void send_remote_request_(uint8_t request);
-  bool discover_remote_port_(RemoteState &remote);
-
+  void register_mdns_service_();
+  void set_wifi_streaming_(bool streaming);
 #ifdef USE_AIRPLAY_METADATA
   void publish_metadata_();
+
+  static constexpr size_t METADATA_FIELD_SIZE = 128;
+  struct TrackInfo {
+    char title[METADATA_FIELD_SIZE];
+    char artist[METADATA_FIELD_SIZE];
+    char album[METADATA_FIELD_SIZE];
+  };
 
   text_sensor::TextSensor *title_text_sensor_{nullptr};
   text_sensor::TextSensor *artist_text_sensor_{nullptr};
   text_sensor::TextSensor *album_text_sensor_{nullptr};
-  ::airplay::Metadata metadata_{};  // Guarded by lock_
+  TrackInfo track_info_{};  // Guarded by lock_
   std::atomic<bool> metadata_changed_{false};
 #endif
-
-  void register_mdns_service_();
-  void set_wifi_streaming_(bool streaming);
 
   // Configuration
   const char *name_;
@@ -115,16 +104,13 @@ class AirPlayMediaSource final : public Component,
   uint16_t port_;
   bool task_stack_in_psram_{false};
 
-  ::airplay::MbedtlsCrypto crypto_;
-  ::airplay::SocketRunner runner_;
-  std::unique_ptr<::airplay::Receiver> receiver_;
-
+  std::unique_ptr<AirPlayBridge> bridge_;
   StaticTask airplay_task_;
   StaticTask remote_task_;
   SemaphoreHandle_t lock_{nullptr};
 
   // Cross-thread state
-  std::atomic<uint8_t> session_state_{static_cast<uint8_t>(::airplay::SessionState::NONE)};
+  std::atomic<uint8_t> session_state_{SESSION_STATE_NONE};
   std::atomic<uint8_t> remote_requests_{0};
   std::atomic<float> remote_volume_{0.0f};
   // Volume last set by the sender, 0 to 1, to avoid sending it back; negative without a session
@@ -133,10 +119,6 @@ class AirPlayMediaSource final : public Component,
   // Main loop state
   bool play_requested_{false};
   bool wifi_streaming_{false};
-
-  RemoteState remote_{};  // Guarded by lock_
-
-  audio::AudioStreamInfo stream_info_{16, ::airplay::NUM_CHANNELS, ::airplay::SAMPLE_RATE};
 };
 
 }  // namespace esphome::airplay

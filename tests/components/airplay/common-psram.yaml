@@ -13,11 +13,13 @@ speaker:
     sample_rate: 44100
     num_channels: 2
 
+airplay:
+  task_stack_in_psram: true
+
 # Synchronized playback with the default buffer for boards with PSRAM
 media_source:
   - platform: airplay
     id: airplay_source
-    task_stack_in_psram: true
 
 media_player:
   - platform: speaker_source

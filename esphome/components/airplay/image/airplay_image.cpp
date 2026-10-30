@@ -13,7 +13,7 @@
 #include <cinttypes>
 #include <cstring>
 
-namespace esphome::airplay {
+namespace esphome::airplay_ {
 
 ESPHOME_LOG_TAG(TAG, "airplay.image");
 
@@ -321,6 +321,6 @@ void AirPlayImage::loop() {
     this->disable_loop();
 }
 
-}  // namespace esphome::airplay
+}  // namespace esphome::airplay_
 
 #endif  // USE_ESP32 && USE_AIRPLAY_ARTWORK

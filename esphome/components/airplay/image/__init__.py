@@ -9,12 +9,11 @@ from esphome.const import CONF_FORMAT, CONF_ID, CONF_PLATFORM, CONF_RESIZE, CONF
 import esphome.final_validate as fv
 from esphome.types import ConfigType
 
-from . import CONF_AIRPLAY_ID
-from .media_source import AirPlayMediaSource, airplay_ns
+from .. import CONF_AIRPLAY_ID, AirPlayHub, airplay_ns
 
 AUTO_LOAD = ["runtime_image"]
 CODEOWNERS = ["@mvoss96"]
-DEPENDENCIES = ["media_source"]
+DEPENDENCIES = ["airplay"]
 
 CONF_MAX_SIZE = "max_size"
 CONF_ON_IMAGE_UPDATE = "on_image_update"
@@ -51,7 +50,7 @@ CONFIG_SCHEMA = cv.All(
     runtime_image.runtime_image_schema(AirPlayImage)
     .extend(
         {
-            cv.GenerateID(CONF_AIRPLAY_ID): cv.use_id(AirPlayMediaSource),
+            cv.GenerateID(CONF_AIRPLAY_ID): cv.use_id(AirPlayHub),
             cv.Optional(CONF_FORMAT, default="AUTO"): cv.one_of(*FORMATS, upper=True),
             # Images are scaled down to fit, keeping their aspect ratio
             cv.Required(CONF_RESIZE): cv.dimensions,
@@ -78,7 +77,7 @@ def _final_validate(config: ConfigType) -> ConfigType:
         if isinstance(image, dict) and image.get(CONF_PLATFORM) == "airplay"
     ]
     if sources.count(config[CONF_AIRPLAY_ID]) > 1:
-        raise cv.Invalid("Each AirPlay media source can have only one cover art image")
+        raise cv.Invalid("Each AirPlay receiver can have only one cover art image")
     return config
 
 
@@ -120,4 +119,5 @@ async def to_code(config: ConfigType) -> None:
 
     cg.add_define("USE_AIRPLAY_ARTWORK")
     hub = await cg.get_variable(config[CONF_AIRPLAY_ID])
+    await cg.register_parented(var, hub)
     cg.add(hub.set_artwork_image(var))

@@ -25,7 +25,6 @@ lvgl:
 image:
   - platform: airplay
     id: airplay_cover
-    airplay_id: airplay_source
     type: RGB565
     resize: 64x64
     max_size: 300kB

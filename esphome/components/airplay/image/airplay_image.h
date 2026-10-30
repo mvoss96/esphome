@@ -4,6 +4,7 @@
 
 #if defined(USE_ESP32) && defined(USE_AIRPLAY_ARTWORK)
 
+#include "esphome/components/airplay/airplay_hub.h"
 #include "esphome/components/image/image.h"
 #include "esphome/components/runtime_image/runtime_image.h"
 #include "esphome/core/component.h"
@@ -14,7 +15,7 @@
 #include <cstddef>
 #include <cstdint>
 
-namespace esphome::airplay {
+namespace esphome::airplay_ {
 
 /// Decodes into a frame buffer owned by AirPlayImage. Used on the decode task only: decoding changes the fields
 /// that drawing reads, so it is never the image on screen.
@@ -32,7 +33,7 @@ class AirPlayDecodeSink : public runtime_image::RuntimeImage {
 /// THREADING: the AirPlay task stores the encoded image as it arrives. A decode task of its own turns it into
 /// pixels in the frame buffer that is not on screen. The main loop then swaps the two frames and runs the
 /// automations, so drawing never sees a frame that is being decoded.
-class AirPlayImage : public Component, public image::Image {
+class AirPlayImage : public AirPlayChild, public image::Image {
  public:
   AirPlayImage(int width, int height, runtime_image::ImageFormat format, image::ImageType type,
                image::Transparency transparency, image::Image *placeholder, bool is_big_endian, size_t max_size);
@@ -119,6 +120,6 @@ class AirPlayImage : public Component, public image::Image {
   LazyCallbackManager<void()> error_callback_;
 };
 
-}  // namespace esphome::airplay
+}  // namespace esphome::airplay_
 
 #endif  // USE_ESP32 && USE_AIRPLAY_ARTWORK

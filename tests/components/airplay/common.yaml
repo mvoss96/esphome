@@ -1,0 +1,27 @@
+wifi:
+  ap:
+
+speaker:
+  - platform: i2s_audio
+    id: airplay_speaker_id
+    i2s_audio_id: i2s_audio_bus
+    dac_type: external
+    i2s_dout_pin: ${i2s_dout_pin}
+    sample_rate: 44100
+    num_channels: 2
+
+media_source:
+  - platform: airplay
+    id: airplay_source
+    name: ESPHome Speaker
+    port: 5000
+    buffer_duration: 750ms
+
+media_player:
+  - platform: speaker_source
+    id: airplay_media_player
+    name: AirPlay Media Player
+    media_pipeline:
+      speaker: airplay_speaker_id
+      sources:
+        - airplay_source

@@ -64,9 +64,6 @@ class AirPlayMediaSource final : public Component, public media_source::MediaSou
 
  protected:
   friend class AirPlayBridge;
-#ifdef USE_AIRPLAY_ARTWORK
-  class AirPlayImage;
-#endif
 
   /// Requests to the remote control task, sent as bits of an atomic
   enum RemoteRequest : uint8_t {

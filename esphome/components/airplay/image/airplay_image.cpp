@@ -269,7 +269,7 @@ bool AirPlayImage::decode_() {
   if (!this->encoded_png_) {
     // Where the JPEG ends: some senders pad the image, a cut off image has no end marker
     size_t end = size;
-    while (end >= 2 && !(this->encoded_[end - 2] == 0xFF && this->encoded_[end - 1] == 0xD9))
+    while (end >= 2 && (this->encoded_[end - 2] != 0xFF || this->encoded_[end - 1] != 0xD9))
       end--;
     if (end != size) {
       ESP_LOGD(TAG, "JPEG end marker at byte %zu of %zu%s", end, size,

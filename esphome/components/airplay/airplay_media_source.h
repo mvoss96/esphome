@@ -127,6 +127,10 @@ class AirPlayMediaSource final : public Component, public media_source::MediaSou
   std::atomic<float> remote_volume_{0.0f};
   // Volume last set by the sender, 0 to 1, to avoid sending it back; negative without a session
   std::atomic<float> sender_volume_{-1.0f};
+  // Volume the sender last reported, including the steps of an adjustment from here; negative without a session
+  std::atomic<float> reported_volume_{-1.0f};
+  // The remote control task is moving the sender's volume; the sender's reports are not applied meanwhile
+  std::atomic<bool> volume_adjusting_{false};
 
   // Main loop state
   bool play_requested_{false};

@@ -47,6 +47,12 @@ static constexpr float VOLUME_CHANGE_THRESHOLD = 0.005f;
 static constexpr uint32_t DISCOVERY_TIMEOUT_MS = 2000;
 static constexpr size_t DISCOVERY_MAX_RESULTS = 10;
 static constexpr uint32_t COMMAND_TIMEOUT_MS = 1500;
+/// How long the sender may take to report a volume change made from here
+static constexpr uint32_t ABSOLUTE_VOLUME_WAIT_MS = 600;
+static constexpr uint32_t VOLUME_STEP_WAIT_MS = 400;
+static constexpr uint32_t VOLUME_POLL_MS = 20;
+/// Limit for one adjustment, in case the sender's reports do not add up
+static constexpr int MAX_VOLUME_STEPS = 24;
 /// Commands still reach a sender for this long after it disconnected, e.g. to resume after a pause
 static constexpr uint32_t SESSION_GRACE_MS = 15 * 60 * 1000;
 
@@ -153,6 +159,7 @@ class AirPlayBridge final : public ::airplay::AudioSink, public ::airplay::Liste
     AirPlayMediaSource *parent = this->parent_;
     if (state == ::airplay::SessionState::NONE) {
       parent->sender_volume_.store(-1.0f, std::memory_order_relaxed);
+      parent->reported_volume_.store(-1.0f, std::memory_order_relaxed);
       // Keep the remote control details for a while, so that a paused sender can be resumed from here
       xSemaphoreTake(parent->lock_, portMAX_DELAY);
       this->remote.session_active = false;
@@ -165,8 +172,13 @@ class AirPlayBridge final : public ::airplay::AudioSink, public ::airplay::Liste
 
   // THREAD CONTEXT: AirPlay task
   void on_volume(float volume) override {
-    this->parent_->sender_volume_.store(volume, std::memory_order_relaxed);
-    this->parent_->request_volume_(volume);
+    AirPlayMediaSource *parent = this->parent_;
+    parent->reported_volume_.store(volume, std::memory_order_relaxed);
+    // While the volume is moved from here, the sender reports each step; the target is already set here
+    if (parent->volume_adjusting_.load(std::memory_order_relaxed))
+      return;
+    parent->sender_volume_.store(volume, std::memory_order_relaxed);
+    parent->request_volume_(volume);
   }
 
   // THREAD CONTEXT: AirPlay task
@@ -255,12 +267,8 @@ class AirPlayBridge final : public ::airplay::AudioSink, public ::airplay::Liste
       if ((requests & command.request) != 0)
         unreachable |= !this->send_command_(remote, command.path);
     }
-    char volume_command[64];
-    if ((requests & AirPlayMediaSource::REMOTE_REQUEST_VOLUME) != 0 &&
-        ::airplay::dacp_volume_command(this->parent_->remote_volume_.load(std::memory_order_relaxed), volume_command,
-                                       sizeof(volume_command)) > 0) {
-      unreachable |= !this->send_command_(remote, volume_command);
-    }
+    if ((requests & AirPlayMediaSource::REMOTE_REQUEST_VOLUME) != 0)
+      unreachable |= !this->adjust_volume_(remote);
 
     if (unreachable) {
       // The port may have changed, so look it up again next time
@@ -280,6 +288,91 @@ class AirPlayBridge final : public ::airplay::AudioSink, public ::airplay::Liste
   /// @return false if the sender could not be reached
   bool send_command_(const RemoteState &remote, const char *command) {
     return ::airplay::send_dacp_command(remote.target, remote.port, command, COMMAND_TIMEOUT_MS) != 0;
+  }
+
+  /// Whether the sender takes an absolute volume (iTunes and Music on a Mac) or only steps (iPhone and iPad)
+  enum AbsoluteVolume : uint8_t {
+    ABSOLUTE_VOLUME_UNKNOWN,
+    ABSOLUTE_VOLUME_SUPPORTED,
+    ABSOLUTE_VOLUME_UNSUPPORTED,
+  };
+
+  /// Moves the sender's volume slider to remote_volume_. @return false if the sender could not be reached
+  bool adjust_volume_(const RemoteState &remote) {
+    AirPlayMediaSource *parent = this->parent_;
+    if (std::strcmp(this->volume_dacp_id_, remote.target.dacp_id) != 0) {
+      std::memcpy(this->volume_dacp_id_, remote.target.dacp_id, sizeof(this->volume_dacp_id_));
+      this->absolute_volume_ = ABSOLUTE_VOLUME_UNKNOWN;
+    }
+    const bool session = parent->reported_volume_.load(std::memory_order_relaxed) >= 0.0f;
+    parent->volume_adjusting_.store(true, std::memory_order_relaxed);
+    bool reachable = true;
+    if (this->absolute_volume_ != ABSOLUTE_VOLUME_UNSUPPORTED || !session) {
+      const float target = parent->remote_volume_.load(std::memory_order_relaxed);
+      char command[64];
+      if (::airplay::dacp_volume_command(target, command, sizeof(command)) > 0) {
+        reachable = this->send_command_(remote, command);
+        // Without a session there is no report to wait for
+        if (reachable && session) {
+          if (this->wait_for_volume_(target, ABSOLUTE_VOLUME_WAIT_MS)) {
+            this->absolute_volume_ = ABSOLUTE_VOLUME_SUPPORTED;
+          } else if (this->absolute_volume_ == ABSOLUTE_VOLUME_UNKNOWN) {
+            ESP_LOGD(TAG, "The sender ignores absolute volume commands, using volume steps");
+            this->absolute_volume_ = ABSOLUTE_VOLUME_UNSUPPORTED;
+          }
+        }
+      }
+    }
+    if (reachable && session && this->absolute_volume_ == ABSOLUTE_VOLUME_UNSUPPORTED)
+      reachable = this->step_volume_(remote);
+    parent->volume_adjusting_.store(false, std::memory_order_relaxed);
+    return reachable;
+  }
+
+  /// Moves the volume with up and down commands, following the sender's reports
+  bool step_volume_(const RemoteState &remote) {
+    AirPlayMediaSource *parent = this->parent_;
+    float position = parent->reported_volume_.load(std::memory_order_relaxed);
+    for (int i = 0; i < MAX_VOLUME_STEPS && position >= 0.0f; i++) {
+      // Read again on every step: the volume may still be changing here
+      const int steps = ::airplay::dacp_volume_steps(position, parent->remote_volume_.load(std::memory_order_relaxed));
+      if (steps == 0)
+        break;
+      const float before = parent->reported_volume_.load(std::memory_order_relaxed);
+      if (!this->send_command_(remote, steps > 0 ? ::airplay::DACP_VOLUME_UP : ::airplay::DACP_VOLUME_DOWN))
+        return false;
+      if (this->wait_for_report_(before, VOLUME_STEP_WAIT_MS)) {
+        position = parent->reported_volume_.load(std::memory_order_relaxed);
+      } else {
+        // No report: assume the step was taken
+        const float step = steps > 0 ? ::airplay::DACP_VOLUME_STEP : -::airplay::DACP_VOLUME_STEP;
+        position = std::clamp(position + step, 0.0f, 1.0f);
+      }
+    }
+    return true;
+  }
+
+  /// @return true once the sender reports a volume within half a step of `target`
+  bool wait_for_volume_(float target, uint32_t timeout_ms) {
+    const uint32_t start = millis();
+    do {
+      const float reported = this->parent_->reported_volume_.load(std::memory_order_relaxed);
+      if (std::fabs(reported - target) < ::airplay::DACP_VOLUME_STEP / 2)
+        return true;
+      vTaskDelay(pdMS_TO_TICKS(VOLUME_POLL_MS));
+    } while (millis() - start < timeout_ms);
+    return false;
+  }
+
+  /// @return true once the sender reports a volume other than `before`
+  bool wait_for_report_(float before, uint32_t timeout_ms) {
+    const uint32_t start = millis();
+    do {
+      if (this->parent_->reported_volume_.load(std::memory_order_relaxed) != before)
+        return true;
+      vTaskDelay(pdMS_TO_TICKS(VOLUME_POLL_MS));
+    } while (millis() - start < timeout_ms);
+    return false;
   }
 
   bool discover_remote_port_(RemoteState &remote) {
@@ -305,6 +398,9 @@ class AirPlayBridge final : public ::airplay::AudioSink, public ::airplay::Liste
   }
 
   AirPlayMediaSource *parent_;
+  // Remote control task only
+  char volume_dacp_id_[::airplay::RemoteTarget::DACP_ID_SIZE]{};
+  AbsoluteVolume absolute_volume_{ABSOLUTE_VOLUME_UNKNOWN};
   audio::AudioStreamInfo stream_info_{16, ::airplay::NUM_CHANNELS, ::airplay::SAMPLE_RATE};
   uint8_t partial_frame_[::airplay::BYTES_PER_FRAME]{};  // AirPlay task only
   size_t partial_remaining_{0};                          // Bytes of partial_frame_ not taken by the output yet

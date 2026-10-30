@@ -62,8 +62,6 @@ static constexpr int64_t START_WINDOW_US = 100000;
 static constexpr int64_t EARLY_LATE_THRESHOLD_US = 50000;
 /// A missing packet is replaced by silence once it is due within this time
 static constexpr int64_t CONCEAL_MARGIN_US = 10000;
-/// Time to wait for the sender's clock before falling back to unsynchronized playback
-static constexpr uint32_t SYNC_WAIT_MS = 2000;
 /// Extra buffer needed on top of the sender's latency for synchronized playback (250 ms)
 static constexpr uint32_t SYNC_MARGIN_FRAMES = SAMPLE_RATE / 4;
 /// Timestamps of playback reports older than this are not used
@@ -220,9 +218,11 @@ void AirPlayMediaSource::run_audio_session_() {
         this->accept_from_seq_ = this->highest_seq_ + 1;
         this->accept_any_seq_ = false;
       }
+      // The timeline may jump after a seek, so wait for the next sync packet. A flush before any audio (some
+      // senders send one right after RECORD) changes nothing, so the anchor stays.
+      if (this->have_seq_ || this->playback_started_)
+        this->anchor_valid_ = false;
       this->reset_playback_();
-      // The timeline may jump after a seek, so wait for the next sync packet
-      this->anchor_valid_ = false;
       // Set here rather than by the RTSP task, so that audio from before the flush cannot switch back to playing
       uint8_t playing = SESSION_STATE_PLAYING;
       if (this->session_state_.compare_exchange_strong(playing, SESSION_STATE_PAUSED, std::memory_order_acq_rel))
@@ -343,7 +343,6 @@ void AirPlayMediaSource::handle_audio_packet_(uint16_t seq, uint32_t rtp, const 
     this->next_seq_ = seq;
     this->highest_seq_ = seq - 1;
     this->head_slot_ = 0;
-    this->first_packet_ms_ = now;
   }
 
   int32_t ahead = static_cast<int16_t>(seq - this->next_seq_);
@@ -708,9 +707,10 @@ bool AirPlayMediaSource::start_playback_() {
   if (this->clock_locked_ && this->anchor_valid_ && fits && !this->played_reports_missing_) {
     this->synced_ = true;
   } else {
-    // Wait a moment for the sender's clock, unless synchronized playback is impossible anyway
+    // Wait for the sender's clock while the buffer has room, unless synchronized playback is impossible anyway.
+    // Packets that become due in the meantime are dropped once playback starts.
     const bool may_sync = !this->played_reports_missing_ && (!this->anchor_valid_ || fits);
-    if (may_sync && millis() - this->first_packet_ms_ < SYNC_WAIT_MS && buffered + 1 < this->slot_count_)
+    if (may_sync && buffered + 1 < this->slot_count_)
       return false;
     const uint32_t level = this->speaker_queued_frames_() + buffered * FRAMES_PER_PACKET;
     if (level < this->fill_target_frames_ && buffered + 1 < this->slot_count_)

@@ -298,7 +298,6 @@ class AirPlayMediaSource final : public Component, public media_source::MediaSou
   uint16_t resend_seq_{0};
   bool have_seq_{false};
   bool accept_any_seq_{false};
-  uint32_t first_packet_ms_{0};
   uint32_t last_packet_ms_{0};
   uint32_t last_resend_scan_ms_{0};
   uint32_t frame_count_reset_ms_{0};

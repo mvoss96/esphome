@@ -114,9 +114,25 @@ void AirPlayMediaSource::register_mdns_service_() {
 
   // cn: codecs (0 = PCM, 1 = ALAC), et: encryption types (0 = none, 1 = RSA)
   mdns_txt_item_t txt[] = {
-      {"txtvers", "1"}, {"ch", "2"},    {"cn", "0,1"},   {"et", "0,1"},   {"ek", "1"},
-      {"sv", "false"},  {"da", "true"}, {"sr", "44100"}, {"ss", "16"},    {"pw", "false"},
-      {"sm", "false"},  {"tp", "UDP"},  {"vn", "3"},     {"vs", "105.1"}, {"am", "ESPHome"},
+      {"txtvers", "1"},
+      {"ch", "2"},
+      {"cn", "0,1"},
+      {"et", "0,1"},
+      {"ek", "1"},
+      {"sv", "false"},
+      {"da", "true"},
+      {"sr", "44100"},
+      {"ss", "16"},
+      {"pw", "false"},
+      {"sm", "false"},
+      {"tp", "UDP"},
+      {"vn", "3"},
+      {"vs", "105.1"},
+      {"am", "ESPHome"},
+#ifdef USE_AIRPLAY_METADATA
+      // Ask senders for track details (0 = text)
+      {"md", "0"},
+#endif
   };
   const esp_err_t err = mdns_service_add(instance, "_raop", "_tcp", this->port_, txt, sizeof(txt) / sizeof(txt[0]));
   if (err != ESP_OK) {
@@ -165,8 +181,37 @@ void AirPlayMediaSource::loop() {
       break;
   }
   this->set_wifi_streaming_(desired != SESSION_STATE_NONE);
+#ifdef USE_AIRPLAY_METADATA
+  if (this->metadata_changed_.exchange(false, std::memory_order_acq_rel))
+    this->publish_metadata_();
+#endif
   this->disable_loop();
 }
+
+#ifdef USE_AIRPLAY_METADATA
+// THREAD CONTEXT: RTSP task
+void AirPlayMediaSource::set_metadata_(const Metadata &metadata) {
+  xSemaphoreTake(this->remote_lock_, portMAX_DELAY);
+  this->metadata_ = metadata;
+  xSemaphoreGive(this->remote_lock_);
+  this->metadata_changed_.store(true, std::memory_order_release);
+  this->enable_loop_soon_any_context();
+}
+
+// THREAD CONTEXT: Main loop
+void AirPlayMediaSource::publish_metadata_() {
+  Metadata metadata;
+  xSemaphoreTake(this->remote_lock_, portMAX_DELAY);
+  metadata = this->metadata_;
+  xSemaphoreGive(this->remote_lock_);
+  if (this->title_text_sensor_ != nullptr)
+    this->title_text_sensor_->publish_state(metadata.title);
+  if (this->artist_text_sensor_ != nullptr)
+    this->artist_text_sensor_->publish_state(metadata.artist);
+  if (this->album_text_sensor_ != nullptr)
+    this->album_text_sensor_->publish_state(metadata.album);
+}
+#endif
 
 // THREAD CONTEXT: Main loop
 void AirPlayMediaSource::set_wifi_streaming_(bool streaming) {

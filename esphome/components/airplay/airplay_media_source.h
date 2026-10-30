@@ -10,6 +10,10 @@
 #include "esphome/core/helpers.h"
 #include "esphome/core/static_task.h"
 
+#ifdef USE_AIRPLAY_METADATA
+#include "esphome/components/text_sensor/text_sensor.h"
+#endif
+
 #include "alac_decoder.h"
 #include "raop_crypto.h"
 
@@ -58,6 +62,12 @@ class AirPlayMediaSource final : public Component, public media_source::MediaSou
   float get_setup_priority() const override { return setup_priority::LATE; }
 
   void set_task_stack_in_psram(bool task_stack_in_psram) { this->task_stack_in_psram_ = task_stack_in_psram; }
+
+#ifdef USE_AIRPLAY_METADATA
+  void set_title_text_sensor(text_sensor::TextSensor *sensor) { this->title_text_sensor_ = sensor; }
+  void set_artist_text_sensor(text_sensor::TextSensor *sensor) { this->artist_text_sensor_ = sensor; }
+  void set_album_text_sensor(text_sensor::TextSensor *sensor) { this->album_text_sensor_ = sensor; }
+#endif
 
   // MediaSource interface
   bool play_uri(const std::string &uri) override;
@@ -187,6 +197,24 @@ class AirPlayMediaSource final : public Component, public media_source::MediaSou
   /// Frames waiting in the speaker pipeline, taken from what was written minus what the speaker reported as played
   uint32_t speaker_queued_frames_() const;
   uint32_t buffered_packets_() const;
+
+#ifdef USE_AIRPLAY_METADATA
+  static constexpr size_t METADATA_FIELD_SIZE = 128;
+  struct Metadata {
+    char title[METADATA_FIELD_SIZE];
+    char artist[METADATA_FIELD_SIZE];
+    char album[METADATA_FIELD_SIZE];
+  };
+  /// Stores new track details (RTSP task) for publish_metadata_() to pick up in the main loop
+  void set_metadata_(const Metadata &metadata);
+  void publish_metadata_();
+
+  text_sensor::TextSensor *title_text_sensor_{nullptr};
+  text_sensor::TextSensor *artist_text_sensor_{nullptr};
+  text_sensor::TextSensor *album_text_sensor_{nullptr};
+  Metadata metadata_{};  // Guarded by remote_lock_
+  std::atomic<bool> metadata_changed_{false};
+#endif
 
   void set_session_state_(SessionState state);
   void register_mdns_service_();

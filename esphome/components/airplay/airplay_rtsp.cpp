@@ -577,9 +577,56 @@ bool AirPlayMediaSource::handle_setup_(RTSPConnection &connection, const char *t
   return true;
 }
 
+#ifdef USE_AIRPLAY_METADATA
+/// Copies a UTF-8 string of a DMAP item, shortened without cutting a character in half
+static void copy_utf8(char *destination, size_t size, const uint8_t *source, size_t length) {
+  size_t count = std::min(length, size - 1);
+  if (count < length) {
+    while (count > 0 && (source[count] & 0xc0) == 0x80)
+      count--;
+  }
+  std::memcpy(destination, source, count);
+  destination[count] = '\0';
+}
+
+/// Picks the track details out of DMAP data: items of a 4 character tag, a 32-bit length and the value
+static void parse_dmap(const uint8_t *data, size_t length, char *title, char *artist, char *album, size_t size) {
+  size_t position = 0;
+  while (position + 8 <= length) {
+    const uint8_t *tag = data + position;
+    const uint32_t item_length = (static_cast<uint32_t>(tag[4]) << 24) | (static_cast<uint32_t>(tag[5]) << 16) |
+                                 (static_cast<uint32_t>(tag[6]) << 8) | tag[7];
+    position += 8;
+    if (item_length > length - position)
+      return;
+    const uint8_t *value = data + position;
+    if (std::memcmp(tag, "mlit", 4) == 0) {
+      parse_dmap(value, item_length, title, artist, album, size);  // Container of the items below
+    } else if (std::memcmp(tag, "minm", 4) == 0) {
+      copy_utf8(title, size, value, item_length);
+    } else if (std::memcmp(tag, "asar", 4) == 0) {
+      copy_utf8(artist, size, value, item_length);
+    } else if (std::memcmp(tag, "asal", 4) == 0) {
+      copy_utf8(album, size, value, item_length);
+    }
+    position += item_length;
+  }
+}
+#endif
+
 void AirPlayMediaSource::handle_set_parameter_(const char *content_type, const char *body, size_t body_length) {
+#ifdef USE_AIRPLAY_METADATA
+  if (strncasecmp(content_type, "application/x-dmap-tagged", 25) == 0) {
+    Metadata metadata{};
+    parse_dmap(reinterpret_cast<const uint8_t *>(body), body_length, metadata.title, metadata.artist, metadata.album,
+               METADATA_FIELD_SIZE);
+    ESP_LOGD(TAG, "Now playing: %s - %s", metadata.artist, metadata.title);
+    this->set_metadata_(metadata);
+    return;
+  }
+#endif
   if (strncasecmp(content_type, "text/parameters", 15) != 0)
-    return;  // Metadata and cover art are not used
+    return;  // Cover art and progress are not used
 
   const char *volume = strstr(body, "volume:");
   if (volume == nullptr)
@@ -645,6 +692,9 @@ void AirPlayMediaSource::end_session_() {
   this->session_owner_ = nullptr;
   this->codec_ = Codec::NONE;
   this->sender_volume_.store(-1.0f, std::memory_order_relaxed);
+#ifdef USE_AIRPLAY_METADATA
+  this->set_metadata_(Metadata{});
+#endif
   if (this->airplay_muted_) {
     this->airplay_muted_ = false;
     this->request_mute_(false);

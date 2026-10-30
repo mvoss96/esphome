@@ -25,3 +25,13 @@ media_player:
       speaker: airplay_speaker_id
       sources:
         - airplay_source
+
+text_sensor:
+  - platform: airplay
+    airplay_id: airplay_source
+    title:
+      name: AirPlay Title
+    artist:
+      name: AirPlay Artist
+    album:
+      name: AirPlay Album

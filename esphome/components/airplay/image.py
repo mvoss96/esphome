@@ -3,7 +3,7 @@
 from esphome import automation
 import esphome.codegen as cg
 from esphome.components import runtime_image
-from esphome.components.image import CONF_TRANSPARENCY, add_metadata
+from esphome.components.image import CONF_TRANSPARENCY, Image_, add_metadata
 import esphome.config_validation as cv
 from esphome.const import CONF_FORMAT, CONF_ID, CONF_PLATFORM, CONF_RESIZE, CONF_TYPE
 import esphome.final_validate as fv
@@ -28,9 +28,7 @@ FORMATS = ("AUTO", "JPEG", "JPG", "PNG")
 DEFAULT_MAX_SIZE = 256 * 1024
 MAX_IMAGE_DIMENSION = 32767
 
-AirPlayImage = airplay_ns.class_(
-    "AirPlayImage", cg.Component, runtime_image.RuntimeImage
-)
+AirPlayImage = airplay_ns.class_("AirPlayImage", cg.Component, Image_)
 
 _CALLBACK_AUTOMATIONS = (
     automation.CallbackAutomation(CONF_ON_IMAGE_UPDATE, "add_on_image_update_callback"),

@@ -4,12 +4,12 @@ from esphome.components.const import CONF_TITLE
 import esphome.config_validation as cv
 from esphome.types import ConfigType
 
+from . import CONF_AIRPLAY_ID
 from .media_source import AirPlayMediaSource
 
 CODEOWNERS = ["@mvoss96"]
 DEPENDENCIES = ["media_source"]
 
-CONF_AIRPLAY_ID = "airplay_id"
 CONF_ALBUM = "album"
 CONF_ARTIST = "artist"
 

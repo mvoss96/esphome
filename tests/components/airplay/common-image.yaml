@@ -1,0 +1,41 @@
+packages:
+  airplay: !include common-psram.yaml
+
+display:
+  - platform: ili9xxx
+    spi_id: spi_bus
+    id: main_lcd
+    model: ili9342
+    cs_pin: 13
+    dc_pin: 14
+    reset_pin: 27
+    invert_colors: true
+    auto_clear_enabled: false
+
+lvgl:
+  displays:
+    - main_lcd
+  widgets:
+    - image:
+        id: cover_widget
+        src: airplay_cover
+        hidden: true
+
+# Cover art of the AirPlay track
+image:
+  - platform: airplay
+    id: airplay_cover
+    airplay_id: airplay_source
+    type: RGB565
+    resize: 64x64
+    max_size: 300kB
+    on_image_update:
+      # Points the widget at the new picture, also after its size changed
+      - lvgl.image.update:
+          id: cover_widget
+          src: airplay_cover
+      - lvgl.widget.show: cover_widget
+    on_image_clear:
+      - lvgl.widget.hide: cover_widget
+    on_image_error:
+      - logger.log: Cover art could not be decoded

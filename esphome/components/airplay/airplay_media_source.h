@@ -25,6 +25,9 @@ namespace esphome::airplay {
 // Connects the airplay-cpp library to this component. Defined in the .cpp file only: the library's namespace is also
 // called airplay, and every component header ends up in the generated main.cpp next to "using namespace esphome".
 class AirPlayBridge;
+#ifdef USE_AIRPLAY_ARTWORK
+class AirPlayImage;
+#endif
 
 /// AirPlay 1 (RAOP) receiver that feeds the received audio to a media player as a media source. The protocol is
 /// handled by the airplay-cpp library; this class connects it to the media source, mDNS, Wi-Fi and text sensors.
@@ -46,6 +49,9 @@ class AirPlayMediaSource final : public Component, public media_source::MediaSou
   void set_artist_text_sensor(text_sensor::TextSensor *sensor) { this->artist_text_sensor_ = sensor; }
   void set_album_text_sensor(text_sensor::TextSensor *sensor) { this->album_text_sensor_ = sensor; }
 #endif
+#ifdef USE_AIRPLAY_ARTWORK
+  void set_artwork_image(AirPlayImage *image) { this->artwork_image_ = image; }
+#endif
 
   // MediaSource interface
   bool play_uri(const std::string &uri) override;
@@ -58,6 +64,9 @@ class AirPlayMediaSource final : public Component, public media_source::MediaSou
 
  protected:
   friend class AirPlayBridge;
+#ifdef USE_AIRPLAY_ARTWORK
+  class AirPlayImage;
+#endif
 
   /// Requests to the remote control task, sent as bits of an atomic
   enum RemoteRequest : uint8_t {
@@ -96,6 +105,9 @@ class AirPlayMediaSource final : public Component, public media_source::MediaSou
   text_sensor::TextSensor *album_text_sensor_{nullptr};
   TrackInfo track_info_{};  // Guarded by lock_
   std::atomic<bool> metadata_changed_{false};
+#endif
+#ifdef USE_AIRPLAY_ARTWORK
+  AirPlayImage *artwork_image_{nullptr};
 #endif
 
   // Configuration

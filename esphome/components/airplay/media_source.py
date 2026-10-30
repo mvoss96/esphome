@@ -27,7 +27,7 @@ AirPlayMediaSource = airplay_ns.class_(
 
 # The AirPlay protocol is handled by the airplay-cpp library
 AIRPLAY_CPP_REPO = "https://github.com/mvoss96/airplay-cpp.git"
-AIRPLAY_CPP_VERSION = "1de08ff90c736ca1c1d57cf275a233a61678e197"
+AIRPLAY_CPP_VERSION = "beadf4e50af2faa79cc82885a06bcdd7bffcc672"
 
 # Room for a burst of audio packets between two reads of a UDP socket
 UDP_RECEIVE_QUEUE_SIZE = 32

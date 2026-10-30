@@ -11,6 +11,10 @@
 #include "esphome/components/wifi/wifi_component.h"
 #endif
 
+#ifdef USE_AIRPLAY_ARTWORK
+#include "airplay_image.h"
+#endif
+
 #include <airplay.h>
 
 #include <esp_heap_caps.h>
@@ -106,6 +110,9 @@ class AirPlayBridge final : public ::airplay::AudioSink, public ::airplay::Liste
 #ifdef USE_AIRPLAY_METADATA
     config.metadata = true;
 #endif
+#ifdef USE_AIRPLAY_ARTWORK
+    config.artwork = this->parent_->artwork_image_ != nullptr;
+#endif
     config.allocate = allocate_buffer;
     config.deallocate = heap_caps_free;
     this->receiver = std::make_unique<::airplay::Receiver>(config, this->crypto, this->runner, *this, this);
@@ -178,6 +185,18 @@ class AirPlayBridge final : public ::airplay::AudioSink, public ::airplay::Liste
     parent->enable_loop_soon_any_context();
 #endif
   }
+
+#ifdef USE_AIRPLAY_ARTWORK
+  // THREAD CONTEXT: AirPlay task
+  bool on_artwork_begin(::airplay::ArtworkFormat format, size_t size) override {
+    return this->parent_->artwork_image_->artwork_begin(format == ::airplay::ArtworkFormat::PNG, size);
+  }
+  void on_artwork_data(const uint8_t *data, size_t length) override {
+    this->parent_->artwork_image_->artwork_data(data, length);
+  }
+  void on_artwork_end(bool complete) override { this->parent_->artwork_image_->artwork_end(complete); }
+  void on_artwork_clear() override { this->parent_->artwork_image_->artwork_clear(); }
+#endif
 
   // THREAD CONTEXT: AirPlay task. Remote control details arrive with the requests of the session owner.
   void on_remote_target(const ::airplay::RemoteTarget &target) override {

@@ -62,7 +62,7 @@ bool RAOPCrypto::init() {
   }
   if (mbedtls_pk_get_type(&this->pk_) != MBEDTLS_PK_RSA)
     return false;
-  // OAEP uses the hash configured here; the challenge signature uses PKCS#1 v1.5 explicitly
+  // Key decryption uses OAEP with SHA-1; sign_challenge() switches to PKCS#1 v1.5 while it signs
   if (mbedtls_rsa_set_padding(mbedtls_pk_rsa(this->pk_), MBEDTLS_RSA_PKCS_V21, MBEDTLS_MD_SHA1) != 0)
     return false;
   this->initialized_ = true;
@@ -78,9 +78,14 @@ bool RAOPCrypto::sign_challenge(const uint8_t *data, size_t length, uint8_t *out
   std::memcpy(buffer, data, length);
   if (length < MIN_LENGTH)
     length = MIN_LENGTH;
-  // MBEDTLS_MD_NONE signs the raw bytes with PKCS#1 v1.5 type 1 padding
-  return mbedtls_rsa_rsassa_pkcs1_v15_sign(mbedtls_pk_rsa(this->pk_), random_bytes, nullptr, MBEDTLS_MD_NONE,
-                                           static_cast<unsigned int>(length), buffer, output) == 0;
+  // mbedtls checks the padding mode of the key, so switch to PKCS#1 v1.5 for signing and back to OAEP afterwards.
+  // MBEDTLS_MD_NONE signs the raw bytes with type 1 padding.
+  mbedtls_rsa_context *rsa = mbedtls_pk_rsa(this->pk_);
+  mbedtls_rsa_set_padding(rsa, MBEDTLS_RSA_PKCS_V15, MBEDTLS_MD_NONE);
+  const bool success = mbedtls_rsa_rsassa_pkcs1_v15_sign(rsa, random_bytes, nullptr, MBEDTLS_MD_NONE,
+                                                         static_cast<unsigned int>(length), buffer, output) == 0;
+  mbedtls_rsa_set_padding(rsa, MBEDTLS_RSA_PKCS_V21, MBEDTLS_MD_SHA1);
+  return success;
 }
 
 bool RAOPCrypto::decrypt_aes_key(const uint8_t *data, size_t length, uint8_t *key) {

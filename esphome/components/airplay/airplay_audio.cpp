@@ -2,6 +2,7 @@
 
 #ifdef USE_ESP32
 
+#include "esphome/core/hal.h"
 #include "esphome/core/log.h"
 
 #include <esp_timer.h>
@@ -39,6 +40,13 @@ static constexpr uint32_t CONCEAL_THRESHOLD_FRAMES = SAMPLE_RATE / 10;
 static constexpr int32_t DRIFT_THRESHOLD_FRAMES = SAMPLE_RATE / 50;
 /// Smoothing of the buffer level for drift correction, as a right shift (1/16 per packet)
 static constexpr int32_t DRIFT_SMOOTHING_SHIFT = 4;
+
+/// Audio beyond this much above the target buffer level is dropped in whole packets (100 ms)
+static constexpr uint32_t OVERFILL_FRAMES = SAMPLE_RATE / 10;
+/// Time for the orchestrator to reset its count of played frames after this source becomes active
+static constexpr uint32_t FRAME_COUNT_SETTLE_MS = 20;
+/// The session ends when a playing sender sends no audio for this long
+static constexpr uint32_t SENDER_TIMEOUT_MS = 10000;
 
 /// Seconds between 1900 (NTP epoch) and 1970
 static constexpr uint64_t NTP_UNIX_OFFSET = 2208988800ULL;
@@ -102,9 +110,12 @@ void AirPlayMediaSource::close_udp_sockets_() {
 void AirPlayMediaSource::run_audio_session_() {
   this->reset_playback_();
   this->accept_from_seq_ = this->initial_seq_;
+  this->accept_any_seq_ = !this->have_initial_seq_;
   this->flush_request_.store(FLUSH_REQUEST_NONE, std::memory_order_relaxed);
-  this->bytes_written_ = 0;
-  this->frames_played_.store(0, std::memory_order_relaxed);
+  this->sender_lost_.store(false, std::memory_order_relaxed);
+  this->last_packet_ms_ = millis();
+  // The written and played frame counts are not reset here: the speaker may still play audio of an earlier
+  // session, and the orchestrator keeps counting it. They restart when this source becomes active.
   this->lost_packets_ = 0;
   this->late_packets_ = 0;
   if (this->encrypted_)
@@ -130,10 +141,19 @@ void AirPlayMediaSource::run_audio_session_() {
       // Paused or seeking: drop the buffered audio and wait for the sender to continue
       if (flush == FLUSH_REQUEST_FROM_SEQ) {
         this->accept_from_seq_ = this->flush_seq_.load(std::memory_order_relaxed);
+        this->accept_any_seq_ = false;
       } else if (this->have_seq_) {
         this->accept_from_seq_ = this->highest_seq_ + 1;
+        this->accept_any_seq_ = false;
       }
       this->reset_playback_();
+    }
+
+    const uint32_t now = millis();
+    if (this->session_state_.load(std::memory_order_relaxed) == SESSION_STATE_PLAYING &&
+        now - this->last_packet_ms_ > SENDER_TIMEOUT_MS) {
+      this->last_packet_ms_ = now;
+      this->sender_lost_.store(true, std::memory_order_release);
     }
 
     if (ready > 0) {
@@ -202,8 +222,9 @@ void AirPlayMediaSource::receive_udp_(int fd) {
 }
 
 void AirPlayMediaSource::handle_audio_packet_(uint16_t seq, const uint8_t *payload, size_t length) {
+  this->last_packet_ms_ = millis();
   if (!this->have_seq_) {
-    if (static_cast<int16_t>(seq - this->accept_from_seq_) < 0) {
+    if (!this->accept_any_seq_ && static_cast<int16_t>(seq - this->accept_from_seq_) < 0) {
       this->late_packets_++;  // Sent before the last flush
       return;
     }
@@ -327,6 +348,19 @@ uint32_t AirPlayMediaSource::buffered_packets_() const {
 }
 
 void AirPlayMediaSource::playback_step_() {
+  if (this->reset_frame_counts_.exchange(false, std::memory_order_acq_rel)) {
+    this->frame_count_reset_pending_ = true;
+    this->frame_count_reset_ms_ = millis();
+  }
+  if (this->frame_count_reset_pending_) {
+    // play_uri() runs just before the orchestrator resets its count; writing in between would go uncounted
+    if (millis() - this->frame_count_reset_ms_ < FRAME_COUNT_SETTLE_MS)
+      return;
+    this->frame_count_reset_pending_ = false;
+    this->bytes_written_ = 0;
+    this->frames_played_.store(0, std::memory_order_relaxed);
+  }
+
   if (!this->have_seq_)
     return;
 
@@ -359,6 +393,15 @@ void AirPlayMediaSource::playback_step_() {
     }
 
     PacketSlot &slot = this->slots_[this->head_slot_];
+    const bool have_reports = this->frames_played_.load(std::memory_order_relaxed) != 0;
+    if (have_reports && buffered > 1 && queued + buffered * FRAMES_PER_PACKET > this->start_frames_ + OVERFILL_FRAMES) {
+      // Far too much audio, e.g. it piled up while another source was being stopped: skip whole packets,
+      // which is much quicker than drift correction
+      slot.valid = false;
+      this->head_slot_ = (this->head_slot_ + 1) % this->slot_count_;
+      this->next_seq_++;
+      continue;
+    }
     uint32_t frames = FRAMES_PER_PACKET;
     if (slot.valid && slot.seq == this->next_seq_) {
       frames = slot.frames;
@@ -376,7 +419,7 @@ void AirPlayMediaSource::playback_step_() {
 
     // The sender's clock and the speaker's clock drift apart slowly. Keep the buffer level on target by
     // dropping or repeating a single frame. Needs the speaker's playback reports to measure the level.
-    if (this->frames_played_.load(std::memory_order_relaxed) != 0) {
+    if (have_reports) {
       const int32_t level = static_cast<int32_t>(queued + (buffered - 1) * FRAMES_PER_PACKET);
       const int32_t error = level - static_cast<int32_t>(this->start_frames_);
       this->drift_error_ += (error - this->drift_error_) >> DRIFT_SMOOTHING_SHIFT;

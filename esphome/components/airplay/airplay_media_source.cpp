@@ -164,9 +164,11 @@ bool AirPlayMediaSource::play_uri(const std::string &uri) {
 
   const auto desired = static_cast<SessionState>(this->session_state_.load(std::memory_order_acquire));
   if (desired == SESSION_STATE_NONE) {
-    ESP_LOGW(TAG, "Cannot play: no AirPlay sender is connected");
-    return false;
+    // Accept and stay idle. Failing would make the orchestrator retry endlessly when repeat is enabled.
+    ESP_LOGD(TAG, "No AirPlay sender is connected");
+    return true;
   }
+  this->reset_frame_counts_.store(true, std::memory_order_release);
   this->set_state_(desired == SESSION_STATE_PAUSED ? media_source::MediaSourceState::PAUSED
                                                    : media_source::MediaSourceState::PLAYING);
   return true;

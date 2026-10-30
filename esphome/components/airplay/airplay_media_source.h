@@ -166,6 +166,11 @@ class AirPlayMediaSource final : public Component, public media_source::MediaSou
   std::atomic<uint8_t> session_state_{SESSION_STATE_NONE};
   std::atomic<uint8_t> remote_requests_{0};
   std::atomic<uint32_t> frames_played_{0};
+  // Set when this source becomes active, so the audio task restarts its count of written frames together with
+  // the orchestrator's count of played frames
+  std::atomic<bool> reset_frame_counts_{false};
+  // Set by the audio task when the sender stopped sending audio without ending the session
+  std::atomic<bool> sender_lost_{false};
   std::atomic<uint8_t> flush_request_{FLUSH_REQUEST_NONE};
   std::atomic<uint16_t> flush_seq_{0};
 
@@ -195,6 +200,7 @@ class AirPlayMediaSource final : public Component, public media_source::MediaSou
   uint32_t client_address_{0};  // IPv4, network byte order
   uint16_t client_control_port_{0};
   uint16_t initial_seq_{0};
+  bool have_initial_seq_{false};
 
   // Audio task state
   mbedtls_aes_context aes_;
@@ -209,6 +215,10 @@ class AirPlayMediaSource final : public Component, public media_source::MediaSou
   uint16_t accept_from_seq_{0};
   uint16_t resend_seq_{0};
   bool have_seq_{false};
+  bool accept_any_seq_{false};
+  uint32_t last_packet_ms_{0};
+  uint32_t frame_count_reset_ms_{0};
+  bool frame_count_reset_pending_{false};
   bool playback_started_{false};
   size_t output_offset_{0};  // bytes of output_buffer_ already written
   size_t output_length_{0};  // bytes in output_buffer_

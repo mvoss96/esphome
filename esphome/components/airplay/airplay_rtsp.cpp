@@ -23,8 +23,13 @@ ESPHOME_LOG_TAG(TAG, "airplay.rtsp");
 
 static constexpr uint32_t SELECT_TIMEOUT_MS = 100;
 static constexpr uint32_t LISTEN_RETRY_MS = 1000;
-static constexpr uint32_t DACP_RESOLVE_TIMEOUT_MS = 2000;
-static constexpr uint32_t DACP_IO_TIMEOUT_MS = 2000;
+static constexpr uint32_t DACP_RESOLVE_TIMEOUT_MS = 1000;
+static constexpr uint32_t DACP_IO_TIMEOUT_MS = 1000;
+static constexpr size_t RTSP_MAX_BODY_SIZE = 1024 * 1024;
+// Detect senders that disappear without closing the connection
+static constexpr int KEEPALIVE_IDLE_S = 30;
+static constexpr int KEEPALIVE_INTERVAL_S = 5;
+static constexpr int KEEPALIVE_COUNT = 3;
 static constexpr int LISTEN_BACKLOG = 2;
 
 static constexpr size_t RESPONSE_SIZE = 1024;
@@ -118,6 +123,10 @@ void AirPlayMediaSource::rtsp_task_loop_() {
 
   while (true) {
     this->process_remote_requests_();
+    if (this->sender_lost_.exchange(false, std::memory_order_acq_rel) && this->session_owner_ != nullptr) {
+      ESP_LOGW(TAG, "No audio from the sender, ending the session");
+      this->close_connection_(*this->session_owner_);
+    }
 
     fd_set read_fds;
     FD_ZERO(&read_fds);
@@ -202,6 +211,13 @@ void AirPlayMediaSource::accept_connection_() {
 
   int enable = 1;
   setsockopt(fd, IPPROTO_TCP, TCP_NODELAY, &enable, sizeof(enable));
+  setsockopt(fd, SOL_SOCKET, SO_KEEPALIVE, &enable, sizeof(enable));
+  int keepalive = KEEPALIVE_IDLE_S;
+  setsockopt(fd, IPPROTO_TCP, TCP_KEEPIDLE, &keepalive, sizeof(keepalive));
+  keepalive = KEEPALIVE_INTERVAL_S;
+  setsockopt(fd, IPPROTO_TCP, TCP_KEEPINTVL, &keepalive, sizeof(keepalive));
+  keepalive = KEEPALIVE_COUNT;
+  setsockopt(fd, IPPROTO_TCP, TCP_KEEPCNT, &keepalive, sizeof(keepalive));
 
   slot->fd = fd;
   slot->rx_length = 0;
@@ -259,6 +275,11 @@ void AirPlayMediaSource::receive_from_connection_(RTSPConnection &connection) {
     size_t content_length = 0;
     if (get_header(buffer, header_length, "Content-Length", value, sizeof(value)))
       content_length = strtoul(value, nullptr, 10);
+    if (content_length > RTSP_MAX_BODY_SIZE) {
+      ESP_LOGW(TAG, "Request body too large");
+      this->close_connection_(connection);
+      return;
+    }
 
     size_t consumed;
     bool keep_open;
@@ -334,8 +355,8 @@ bool AirPlayMediaSource::process_request_(RTSPConnection &connection, char *requ
   } else if (strcmp(method, "RECORD") == 0) {
     char rtp_info[96] = "";
     uint32_t seq = 0;
-    if (get_header(request, header_length, "RTP-Info", rtp_info, sizeof(rtp_info)))
-      get_numeric_parameter(rtp_info, "seq", &seq);
+    this->have_initial_seq_ = get_header(request, header_length, "RTP-Info", rtp_info, sizeof(rtp_info)) &&
+                              get_numeric_parameter(rtp_info, "seq", &seq);
     this->initial_seq_ = static_cast<uint16_t>(seq);
     if (is_owner && this->start_audio_()) {
       ESP_LOGI(TAG, "Playback started");
@@ -347,6 +368,8 @@ bool AirPlayMediaSource::process_request_(RTSPConnection &connection, char *requ
     }
   } else if (strcmp(method, "FLUSH") == 0) {
     if (is_owner) {
+      // Set before the flush request, so the audio task's switch back to playing cannot be overwritten
+      this->set_session_state_(SESSION_STATE_PAUSED);
       char rtp_info[96] = "";
       uint32_t seq = 0;
       if (get_header(request, header_length, "RTP-Info", rtp_info, sizeof(rtp_info)) &&
@@ -357,7 +380,6 @@ bool AirPlayMediaSource::process_request_(RTSPConnection &connection, char *requ
         // Without a sequence number accept whatever arrives next
         this->flush_request_.store(FLUSH_REQUEST_ALL, std::memory_order_release);
       }
-      this->set_session_state_(SESSION_STATE_PAUSED);
     }
   } else if (strcmp(method, "TEARDOWN") == 0) {
     if (is_owner) {
@@ -606,7 +628,10 @@ void AirPlayMediaSource::end_session_() {
   this->dacp_id_[0] = '\0';
   this->active_remote_[0] = '\0';
   this->dacp_port_ = 0;
-  this->airplay_muted_ = false;
+  if (this->airplay_muted_) {
+    this->airplay_muted_ = false;
+    this->request_mute_(false);
+  }
   this->remote_requests_.store(0, std::memory_order_relaxed);
   this->set_session_state_(SESSION_STATE_NONE);
 }
@@ -623,6 +648,7 @@ void AirPlayMediaSource::process_remote_requests_() {
 
   if ((requests & REMOTE_REQUEST_DISCONNECT) != 0) {
     ESP_LOGI(TAG, "Disconnecting the sender");
+    this->stop_audio_();
     // Pause the sender first so it does not switch to its own speaker and keep playing there
     if (this->dacp_id_[0] != '\0')
       this->send_dacp_command_("pause");
@@ -664,6 +690,7 @@ bool AirPlayMediaSource::send_dacp_command_(const char *command) {
     return false;
   struct timeval timeout {};
   timeout.tv_sec = DACP_IO_TIMEOUT_MS / 1000;
+  timeout.tv_usec = (DACP_IO_TIMEOUT_MS % 1000) * 1000;
   setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &timeout, sizeof(timeout));
   setsockopt(fd, SOL_SOCKET, SO_SNDTIMEO, &timeout, sizeof(timeout));
 

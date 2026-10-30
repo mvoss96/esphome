@@ -37,7 +37,7 @@ static constexpr uint8_t PAYLOAD_RESEND_REQUEST = 0x55;
 static constexpr uint8_t PAYLOAD_RETRANSMIT = 0x56;
 static constexpr uint8_t PAYLOAD_AUDIO = 0x60;
 
-// Clock exchange with the sender: a quick burst to lock fast, then a slow refresh
+// Clock exchange with the sender: a quick burst until the clock locks, then a slow refresh
 static constexpr uint32_t TIMING_BURST_COUNT = 3;
 static constexpr uint32_t TIMING_BURST_INTERVAL_MS = 100;
 static constexpr uint32_t TIMING_INTERVAL_MS = 3000;
@@ -239,8 +239,10 @@ void AirPlayMediaSource::run_audio_session_() {
     }
 
     const uint32_t now = millis();
-    const uint32_t timing_interval =
-        this->timing_requests_sent_ < TIMING_BURST_COUNT ? TIMING_BURST_INTERVAL_MS : TIMING_INTERVAL_MS;
+    // Keep asking quickly until the clock locks, so that a lost packet does not delay synchronized playback
+    const uint32_t timing_interval = this->timing_requests_sent_ < TIMING_BURST_COUNT || !this->clock_locked_
+                                         ? TIMING_BURST_INTERVAL_MS
+                                         : TIMING_INTERVAL_MS;
     if (this->timing_requests_sent_ == 0 || now - this->last_timing_request_ms_ >= timing_interval)
       this->send_timing_request_();
 

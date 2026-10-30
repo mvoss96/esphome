@@ -1,5 +1,6 @@
 import esphome.codegen as cg
 from esphome.components import text_sensor
+from esphome.components.const import CONF_TITLE
 import esphome.config_validation as cv
 from esphome.types import ConfigType
 
@@ -11,7 +12,6 @@ DEPENDENCIES = ["media_source"]
 CONF_AIRPLAY_ID = "airplay_id"
 CONF_ALBUM = "album"
 CONF_ARTIST = "artist"
-CONF_TITLE = "title"
 
 CONFIG_SCHEMA = cv.Schema(
     {

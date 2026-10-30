@@ -10,7 +10,7 @@ from typing import Any
 
 from esphome import automation
 import esphome.codegen as cg
-from esphome.components.const import CONF_DESCRIPTION
+from esphome.components.const import CONF_DESCRIPTION, CONF_TITLE
 from esphome.components.homeassistant import DOMAIN as HOMEASSISTANT_DOMAIN
 import esphome.config_validation as cv
 from esphome.const import (
@@ -42,7 +42,6 @@ CONF_ENTITY = "entity"
 CONF_INPUTS = "inputs"
 CONF_INTEGRATION = "integration"
 CONF_SUPPORTED_FEATURES = "supported_features"
-CONF_TITLE = "title"
 CONF_WIZARD = "wizard"
 
 _API = cg.esphome_ns.namespace("api")

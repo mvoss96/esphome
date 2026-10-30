@@ -1,5 +1,7 @@
 #include "raop_crypto.h"
 
+#ifdef USE_ESP32
+
 #include <cstring>
 
 #include <mbedtls/rsa.h>
@@ -160,3 +162,5 @@ size_t base64_encode_unpadded(const uint8_t *input, size_t input_length, char *o
 }
 
 }  // namespace esphome::airplay
+
+#endif  // USE_ESP32

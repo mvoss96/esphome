@@ -1,5 +1,7 @@
 #include "alac_decoder.h"
 
+#ifdef USE_ESP32
+
 #include <algorithm>
 #include <cstring>
 
@@ -377,3 +379,5 @@ int32_t ALACDecoder::decode(const uint8_t *data, size_t length, int16_t *output)
 }
 
 }  // namespace esphome::airplay
+
+#endif  // USE_ESP32

@@ -1,5 +1,9 @@
 #pragma once
 
+#include "esphome/core/defines.h"
+
+#ifdef USE_ESP32
+
 #include <cstddef>
 #include <cstdint>
 
@@ -42,3 +46,5 @@ size_t base64_decode_loose(const char *input, size_t input_length, uint8_t *outp
 size_t base64_encode_unpadded(const uint8_t *input, size_t input_length, char *output, size_t output_size);
 
 }  // namespace esphome::airplay
+
+#endif  // USE_ESP32

@@ -1,5 +1,9 @@
 #pragma once
 
+#include "esphome/core/defines.h"
+
+#ifdef USE_ESP32
+
 #include <cstddef>
 #include <cstdint>
 #include <memory>
@@ -53,3 +57,5 @@ class ALACDecoder {
 };
 
 }  // namespace esphome::airplay
+
+#endif  // USE_ESP32

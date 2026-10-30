@@ -4,9 +4,15 @@
 
 #include "esphome/core/log.h"
 
+#ifdef USE_WIFI
+#include "esphome/components/wifi/wifi_component.h"
+#endif
+
 #include <mdns.h>
 
+#include <algorithm>
 #include <cinttypes>
+#include <cmath>
 #include <cstdio>
 
 namespace esphome::airplay {
@@ -18,8 +24,17 @@ static constexpr char PLAY_URI[] = "airplay://current";
 
 static constexpr uint32_t RTSP_TASK_STACK_SIZE = 8192;
 static constexpr uint32_t AUDIO_TASK_STACK_SIZE = 6144;
+static constexpr uint32_t REMOTE_TASK_STACK_SIZE = 4096;
+static constexpr UBaseType_t REMOTE_TASK_PRIORITY = 2;
 static constexpr UBaseType_t RTSP_TASK_PRIORITY = 3;
 static constexpr UBaseType_t AUDIO_TASK_PRIORITY = 5;
+
+/// Buffer level for unsynchronized playback, at most 500 ms
+static constexpr uint32_t MAX_FILL_TARGET_FRAMES = SAMPLE_RATE / 2;
+/// Spare slots for packets that arrive early or out of order
+static constexpr uint32_t SPARE_SLOTS = 8;
+/// The sender's volume slider is not updated for changes smaller than this
+static constexpr float VOLUME_CHANGE_THRESHOLD = 0.005f;
 
 static constexpr uint32_t MDNS_RETRY_ID = 0;
 static constexpr uint32_t MDNS_RETRY_INTERVAL_MS = 5000;
@@ -39,10 +54,11 @@ void AirPlayMediaSource::setup() {
   }
   mbedtls_aes_init(&this->aes_);
 
-  // Audio is buffered before playback starts; extra slots absorb packets that arrive early or out of order
-  this->start_frames_ = this->buffer_duration_ms_ * SAMPLE_RATE / 1000;
-  const uint32_t buffer_packets = (this->start_frames_ + FRAMES_PER_PACKET - 1) / FRAMES_PER_PACKET;
-  this->slot_count_ = buffer_packets + buffer_packets / 4 + 8;
+  // Synchronized playback holds the sender's whole latency (about 2.25 s) in this buffer. Unsynchronized
+  // playback fills three quarters of it, up to 500 ms, before it starts.
+  const uint32_t buffer_frames = this->buffer_duration_ms_ * SAMPLE_RATE / 1000;
+  this->slot_count_ = (buffer_frames + FRAMES_PER_PACKET - 1) / FRAMES_PER_PACKET + SPARE_SLOTS;
+  this->fill_target_frames_ = std::min(MAX_FILL_TARGET_FRAMES, buffer_frames * 3 / 4);
 
   RAMAllocator<PacketSlot> slot_allocator;
   this->slots_ = slot_allocator.make_unique_array_for_overwrite(this->slot_count_);
@@ -68,8 +84,9 @@ void AirPlayMediaSource::setup() {
     this->connections_[i].buffer = &this->rtsp_buffers_[i * (RTSP_BUFFER_SIZE + 1)];
 
   this->audio_events_ = xEventGroupCreate();
-  if (this->audio_events_ == nullptr) {
-    ESP_LOGE(TAG, "Failed to create event group");
+  this->remote_lock_ = xSemaphoreCreateMutex();
+  if (this->audio_events_ == nullptr || this->remote_lock_ == nullptr) {
+    ESP_LOGE(TAG, "Failed to create synchronization objects");
     this->mark_failed();
     return;
   }
@@ -78,7 +95,9 @@ void AirPlayMediaSource::setup() {
   if (!this->audio_task_.create(AirPlayMediaSource::audio_task, "airplay_audio", AUDIO_TASK_STACK_SIZE, this,
                                 AUDIO_TASK_PRIORITY, this->task_stack_in_psram_) ||
       !this->rtsp_task_.create(AirPlayMediaSource::rtsp_task, "airplay_rtsp", RTSP_TASK_STACK_SIZE, this,
-                               RTSP_TASK_PRIORITY, this->task_stack_in_psram_)) {
+                               RTSP_TASK_PRIORITY, this->task_stack_in_psram_) ||
+      !this->remote_task_.create(AirPlayMediaSource::remote_task, "airplay_remote", REMOTE_TASK_STACK_SIZE, this,
+                                 REMOTE_TASK_PRIORITY, this->task_stack_in_psram_)) {
     ESP_LOGE(TAG, "Failed to create tasks");
     this->mark_failed();
     return;
@@ -145,7 +164,35 @@ void AirPlayMediaSource::loop() {
       }
       break;
   }
+  this->set_wifi_streaming_(desired != SESSION_STATE_NONE);
   this->disable_loop();
+}
+
+// THREAD CONTEXT: Main loop
+void AirPlayMediaSource::set_wifi_streaming_(bool streaming) {
+  if (streaming == this->wifi_streaming_)
+    return;
+  this->wifi_streaming_ = streaming;
+#ifdef USE_WIFI
+  // Power saving delays packets, and roaming scans take the radio off channel; both cause dropouts
+  if (wifi::global_wifi_component == nullptr)
+    return;
+  if (streaming) {
+#ifdef USE_WIFI_RUNTIME_POWER_SAVE
+    wifi::global_wifi_component->request_high_performance();
+#endif
+#ifdef USE_WIFI_RUNTIME_ROAMING_SUPPRESSION
+    wifi::global_wifi_component->request_roaming_suppression();
+#endif
+  } else {
+#ifdef USE_WIFI_RUNTIME_POWER_SAVE
+    wifi::global_wifi_component->release_high_performance();
+#endif
+#ifdef USE_WIFI_RUNTIME_ROAMING_SUPPRESSION
+    wifi::global_wifi_component->release_roaming_suppression();
+#endif
+  }
+#endif
 }
 
 // THREAD CONTEXT: RTSP or audio task
@@ -176,17 +223,16 @@ bool AirPlayMediaSource::play_uri(const std::string &uri) {
 
 // THREAD CONTEXT: Main loop
 void AirPlayMediaSource::handle_command(media_source::MediaSourceCommand command) {
-  const bool connected = this->session_state_.load(std::memory_order_acquire) != SESSION_STATE_NONE;
   uint8_t request = 0;
   switch (command) {
     case media_source::MediaSourceCommand::STOP:
-      if (!connected) {
+      if (this->session_state_.load(std::memory_order_acquire) == SESSION_STATE_NONE) {
         this->play_requested_ = false;
         this->set_state_(media_source::MediaSourceState::IDLE);
-        return;
+      } else {
+        this->disconnect_requested_.store(true, std::memory_order_release);
       }
-      request = REMOTE_REQUEST_DISCONNECT;
-      break;
+      return;
     case media_source::MediaSourceCommand::PLAY:
       request = REMOTE_REQUEST_PLAY;
       break;
@@ -202,9 +248,21 @@ void AirPlayMediaSource::handle_command(media_source::MediaSourceCommand command
     default:
       return;
   }
-  if (!connected)
+  // Also works for a while after the sender disconnected: "play" then makes it reconnect
+  this->send_remote_request_(request);
+}
+
+// THREAD CONTEXT: Main loop
+void AirPlayMediaSource::notify_volume_changed(float volume) {
+  // Move the sender's volume slider along, unless the change came from the sender
+  const float sender_volume = this->sender_volume_.load(std::memory_order_relaxed);
+  if (sender_volume < 0.0f || std::fabs(volume - sender_volume) < VOLUME_CHANGE_THRESHOLD)
     return;
-  this->remote_requests_.fetch_or(request, std::memory_order_acq_rel);
+  this->sender_volume_.store(volume, std::memory_order_relaxed);
+  // -30 to 0 dB, and -144 for silence
+  const float db = volume < VOLUME_CHANGE_THRESHOLD ? -144.0f : (volume - 1.0f) * 30.0f;
+  this->remote_volume_db_.store(db, std::memory_order_relaxed);
+  this->send_remote_request_(REMOTE_REQUEST_VOLUME);
 }
 
 // THREAD CONTEXT: Speaker playback callback

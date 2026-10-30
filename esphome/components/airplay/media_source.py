@@ -1,5 +1,5 @@
 import esphome.codegen as cg
-from esphome.components import esp32, media_source, psram, socket
+from esphome.components import esp32, media_source, psram, socket, wifi
 from esphome.components.mdns import DOMAIN as MDNS_DOMAIN
 import esphome.config_validation as cv
 from esphome.const import (
@@ -28,10 +28,22 @@ AirPlayMediaSource = airplay_ns.class_(
 # Room for a burst of audio packets between two reads of a UDP socket
 UDP_RECEIVE_QUEUE_SIZE = 32
 
+# Synchronized playback buffers the sender's whole latency (about 2.25 s), which needs PSRAM.
+# Without PSRAM the buffer is small and playback is not synchronized to the sender.
+DEFAULT_BUFFER_DURATION_PSRAM_MS = 2500
+DEFAULT_BUFFER_DURATION_MS = 500
+
 
 def _set_default_name(config: ConfigType) -> ConfigType:
     if CONF_NAME not in config:
         config[CONF_NAME] = CORE.friendly_name or CORE.name
+    return config
+
+
+def _request_network_features(config: ConfigType) -> ConfigType:
+    # Wi-Fi power saving and roaming scans cause dropouts while streaming
+    wifi.enable_runtime_power_save_control()
+    wifi.enable_runtime_roaming_suppression()
     return config
 
 
@@ -50,10 +62,10 @@ CONFIG_SCHEMA = cv.All(
         {
             cv.Optional(CONF_NAME): cv.All(cv.string_strict, cv.Length(min=1, max=48)),
             cv.Optional(CONF_PORT, default=5000): cv.port,
-            cv.Optional(CONF_BUFFER_DURATION, default="500ms"): cv.All(
+            cv.Optional(CONF_BUFFER_DURATION): cv.All(
                 cv.positive_time_period_milliseconds,
                 cv.Range(
-                    min=TimePeriod(milliseconds=100), max=TimePeriod(milliseconds=4000)
+                    min=TimePeriod(milliseconds=100), max=TimePeriod(milliseconds=5000)
                 ),
             ),
             cv.Optional(CONF_TASK_STACK_IN_PSRAM): psram.validate_task_stack_in_psram,
@@ -63,6 +75,7 @@ CONFIG_SCHEMA = cv.All(
     cv.only_on_esp32,
     _set_default_name,
     _consume_sockets,
+    _request_network_features,
 )
 
 
@@ -79,11 +92,14 @@ FINAL_VALIDATE_SCHEMA = _final_validate
 
 
 async def to_code(config: ConfigType) -> None:
+    if (buffer_duration := config.get(CONF_BUFFER_DURATION)) is not None:
+        buffer_duration_ms = int(buffer_duration.total_milliseconds)
+    elif psram.DOMAIN in CORE.loaded_integrations:
+        buffer_duration_ms = DEFAULT_BUFFER_DURATION_PSRAM_MS
+    else:
+        buffer_duration_ms = DEFAULT_BUFFER_DURATION_MS
     var = cg.new_Pvariable(
-        config[CONF_ID],
-        config[CONF_NAME],
-        config[CONF_PORT],
-        config[CONF_BUFFER_DURATION],
+        config[CONF_ID], config[CONF_NAME], config[CONF_PORT], buffer_duration_ms
     )
     await cg.register_component(var, config)
     await media_source.register_media_source(var, config)

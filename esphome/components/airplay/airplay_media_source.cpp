@@ -118,10 +118,27 @@ class AirPlayBridge final : public ::airplay::AudioSink, public ::airplay::Liste
 
   // THREAD CONTEXT: AirPlay task
   size_t write(const int16_t *samples, size_t frames) override {
+    // An output may take only part of a frame. The rest of that frame goes out before anything else, so that the
+    // channels stay in place.
+    if (this->partial_remaining_ > 0) {
+      const size_t offset = ::airplay::BYTES_PER_FRAME - this->partial_remaining_;
+      this->partial_remaining_ -=
+          this->parent_->write_output(this->partial_frame_ + offset, this->partial_remaining_, 0, this->stream_info_);
+      if (this->partial_remaining_ > 0)
+        return 0;
+    }
     // Writes nothing unless this source is the active one
-    const size_t written = this->parent_->write_output(reinterpret_cast<const uint8_t *>(samples),
-                                                       frames * ::airplay::BYTES_PER_FRAME, 0, this->stream_info_);
-    return written / ::airplay::BYTES_PER_FRAME;
+    const auto *bytes = reinterpret_cast<const uint8_t *>(samples);
+    const size_t written =
+        this->parent_->write_output(bytes, frames * ::airplay::BYTES_PER_FRAME, 0, this->stream_info_);
+    size_t whole = written / ::airplay::BYTES_PER_FRAME;
+    const size_t part = written % ::airplay::BYTES_PER_FRAME;
+    if (part > 0) {
+      std::memcpy(this->partial_frame_, bytes + whole * ::airplay::BYTES_PER_FRAME, ::airplay::BYTES_PER_FRAME);
+      this->partial_remaining_ = ::airplay::BYTES_PER_FRAME - part;
+      whole++;  // Counted as written; its rest follows on the next call
+    }
+    return whole;
   }
 
   // THREAD CONTEXT: AirPlay task
@@ -270,6 +287,8 @@ class AirPlayBridge final : public ::airplay::AudioSink, public ::airplay::Liste
 
   AirPlayMediaSource *parent_;
   audio::AudioStreamInfo stream_info_{16, ::airplay::NUM_CHANNELS, ::airplay::SAMPLE_RATE};
+  uint8_t partial_frame_[::airplay::BYTES_PER_FRAME]{};  // AirPlay task only
+  size_t partial_remaining_{0};                          // Bytes of partial_frame_ not taken by the output yet
 };
 
 AirPlayMediaSource::AirPlayMediaSource(const char *name, uint16_t port, uint32_t buffer_duration_ms)

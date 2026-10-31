@@ -94,7 +94,7 @@ dependencies:
   # airplay
   mvoss96/airplay-cpp:
     git: https://github.com/mvoss96/airplay-cpp.git
-    version: 7295ca32a019b6be897dbb46f4af89b88470b2a9
+    version: 40209ba85d8e22bb5d23c5252bf75b71992d6922
   espressif/mqtt:
     version: "1.0.0"
     rules:

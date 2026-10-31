@@ -10,6 +10,7 @@ from esphome.const import (
     CONF_ID,
     CONF_MODEL,
     CONF_NAME,
+    CONF_PASSWORD,
     CONF_PLATFORM,
     CONF_PORT,
     CONF_PROJECT,
@@ -28,7 +29,7 @@ CONF_AIRPLAY_ID = "airplay_id"
 
 # The AirPlay protocol is handled by the airplay-cpp library
 AIRPLAY_CPP_REPO = "https://github.com/mvoss96/airplay-cpp.git"
-AIRPLAY_CPP_VERSION = "7295ca32a019b6be897dbb46f4af89b88470b2a9"
+AIRPLAY_CPP_VERSION = "40209ba85d8e22bb5d23c5252bf75b71992d6922"
 
 # Room for a burst of audio packets between two reads of a UDP socket
 UDP_RECEIVE_QUEUE_SIZE = 32
@@ -66,6 +67,10 @@ CONFIG_SCHEMA = cv.All(
             cv.GenerateID(): cv.declare_id(AirPlayHub),
             cv.Optional(CONF_NAME): cv.All(cv.string_strict, cv.Length(min=1, max=48)),
             cv.Optional(CONF_MODEL): cv.All(cv.string_strict, cv.Length(min=1, max=64)),
+            # Senders ask for it before they can stream
+            cv.Optional(CONF_PASSWORD): cv.All(
+                cv.string_strict, cv.Length(min=1, max=64)
+            ),
             cv.Optional(CONF_PORT, default=5000): cv.port,
             cv.Optional(CONF_TASK_STACK_IN_PSRAM): psram.validate_task_stack_in_psram,
         }
@@ -108,6 +113,9 @@ async def to_code(config: ConfigType) -> None:
     _, _, project_model = project.get(CONF_NAME, "").partition(".")
     if model := config.get(CONF_MODEL) or project_model:
         cg.add(var.set_model(model))
+
+    if (password := config.get(CONF_PASSWORD)) is not None:
+        cg.add(var.set_password(password))
 
     if config.get(CONF_TASK_STACK_IN_PSRAM):
         cg.add(var.set_task_stack_in_psram(True))

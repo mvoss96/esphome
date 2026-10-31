@@ -3,6 +3,7 @@
 #ifdef USE_ESP32
 
 #include "media_source/airplay_media_source.h"
+#include "esphome/core/application.h"
 #include "esphome/core/hal.h"
 #include "esphome/core/log.h"
 
@@ -103,6 +104,7 @@ void AirPlayHub::setup() {
   ::airplay::ReceiverConfig config;
   config.name = this->name_;
   config.model = this->model_;
+  config.password = this->password_;
   get_mac_address_raw(config.mac);
   // Synchronized playback holds the sender's whole latency (about 2.25 s) in the buffer. Unsynchronized playback
   // fills three quarters of it, up to 500 ms, before it starts.
@@ -112,6 +114,9 @@ void AirPlayHub::setup() {
 #endif
 #ifdef USE_AIRPLAY_ARTWORK
   config.artwork = this->artwork_image_ != nullptr;
+#endif
+#ifdef USE_AIRPLAY_PROGRESS
+  config.progress = true;
 #endif
   config.allocate = allocate_buffer;
   config.deallocate = heap_caps_free;
@@ -142,10 +147,12 @@ void AirPlayHub::dump_config() {
                 "  Name: %s\n"
                 "  Model: %s\n"
                 "  Port: %u\n"
+                "  Password: %s\n"
                 "  Buffer duration: %" PRIu32 " ms\n"
                 "  Task stack in PSRAM: %s\n"
                 "  airplay-cpp: " AIRPLAY_CPP_VERSION,
-                this->name_, this->model_, this->port_, this->buffer_duration_ms_, YESNO(this->task_stack_in_psram_));
+                this->name_, this->model_, this->port_, YESNO(this->password_ != nullptr), this->buffer_duration_ms_,
+                YESNO(this->task_stack_in_psram_));
 }
 
 // THREAD CONTEXT: AirPlay task
@@ -189,8 +196,24 @@ void AirPlayHub::register_mdns_service_() {
 
 // THREAD CONTEXT: Main loop. Woken by the AirPlay task.
 void AirPlayHub::loop() {
-  if (this->session_changed_.exchange(false, std::memory_order_acq_rel))
+  if (this->session_changed_.exchange(false, std::memory_order_acq_rel)) {
     this->set_wifi_streaming_(this->get_session_state() != ::airplay::SessionState::NONE);
+#ifdef USE_AIRPLAY_PROGRESS
+    this->update_progress_clock_();
+#endif
+  }
+#ifdef USE_AIRPLAY_PROGRESS
+  if (this->progress_changed_.exchange(false, std::memory_order_acq_rel)) {
+    xSemaphoreTake(this->lock_, portMAX_DELAY);
+    const ::airplay::Progress progress = this->progress_;
+    xSemaphoreGive(this->lock_);
+    this->progress_duration_ms_ = progress.duration_ms;
+    this->progress_base_ms_ = progress.position_ms;
+    this->progress_since_ms_ = App.get_loop_component_start_time();
+    this->progress_running_ = false;
+    this->update_progress_clock_();
+  }
+#endif
 #ifdef USE_AIRPLAY_METADATA
   if (this->metadata_changed_.exchange(false, std::memory_order_acq_rel)) {
     ::airplay::Metadata metadata;
@@ -202,6 +225,28 @@ void AirPlayHub::loop() {
 #endif
   this->disable_loop();
 }
+
+#ifdef USE_AIRPLAY_PROGRESS
+// THREAD CONTEXT: Main loop. Starts or stops the position clock as the session plays or pauses.
+void AirPlayHub::update_progress_clock_() {
+  const uint32_t now = App.get_loop_component_start_time();
+  const bool running = this->progress_duration_ms_ > 0 && this->get_session_state() == ::airplay::SessionState::PLAYING;
+  if (running != this->progress_running_) {
+    if (this->progress_running_)
+      this->progress_base_ms_ += now - this->progress_since_ms_;
+    this->progress_since_ms_ = now;
+    this->progress_running_ = running;
+  }
+  this->progress_callback_.call();
+}
+
+uint32_t AirPlayHub::get_track_progress_ms() const {
+  uint32_t position = this->progress_base_ms_;
+  if (this->progress_running_)
+    position += App.get_loop_component_start_time() - this->progress_since_ms_;
+  return std::min(position, this->progress_duration_ms_);
+}
+#endif
 
 // THREAD CONTEXT: Main loop
 void AirPlayHub::set_wifi_streaming_(bool streaming) {
@@ -335,6 +380,16 @@ void AirPlayHub::on_metadata(const ::airplay::Metadata &metadata) {
   this->metadata_ = metadata;
   xSemaphoreGive(this->lock_);
   this->metadata_changed_.store(true, std::memory_order_release);
+  this->enable_loop_soon_any_context();
+#endif
+}
+
+void AirPlayHub::on_progress(const ::airplay::Progress &progress) {
+#ifdef USE_AIRPLAY_PROGRESS
+  xSemaphoreTake(this->lock_, portMAX_DELAY);
+  this->progress_ = progress;
+  xSemaphoreGive(this->lock_);
+  this->progress_changed_.store(true, std::memory_order_release);
   this->enable_loop_soon_any_context();
 #endif
 }

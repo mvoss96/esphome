@@ -14,6 +14,7 @@ airplay:
   id: airplay_hub
   name: ESPHome Speaker
   model: Test Speaker
+  password: secret
   port: 5000
 
 media_source:
@@ -40,3 +41,12 @@ text_sensor:
   - platform: airplay
     type: album
     name: AirPlay Album
+
+sensor:
+  - platform: airplay
+    type: track_progress
+    name: AirPlay Track Progress
+    update_interval: 500ms
+  - platform: airplay
+    type: track_duration
+    name: AirPlay Track Duration

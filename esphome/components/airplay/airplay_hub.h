@@ -61,10 +61,22 @@ class AirPlayHub final : public Component, public ::airplay::AudioSink, public :
 
   void set_task_stack_in_psram(bool task_stack_in_psram) { this->task_stack_in_psram_ = task_stack_in_psram; }
   void set_model(const char *model) { this->model_ = model; }
+  void set_password(const char *password) { this->password_ = password; }
   void set_buffer_duration(uint32_t buffer_duration_ms) { this->buffer_duration_ms_ = buffer_duration_ms; }
   void set_media_source(AirPlayMediaSource *media_source) { this->media_source_ = media_source; }
 #ifdef USE_AIRPLAY_ARTWORK
   void set_artwork_image(AirPlayImage *image) { this->artwork_image_ = image; }
+#endif
+#ifdef USE_AIRPLAY_PROGRESS
+  /// Called on the main loop when the track position jumps, the track changes or playback starts or stops
+  template<typename F> void add_progress_callback(F &&callback) {
+    this->progress_callback_.add(std::forward<F>(callback));
+  }
+  /// Length of the current track; 0 when unknown or no track plays
+  uint32_t get_track_duration_ms() const { return this->progress_duration_ms_; }
+  /// Position in the current track, advancing while it plays
+  uint32_t get_track_progress_ms() const;
+  bool is_progress_running() const { return this->progress_running_; }
 #endif
 #ifdef USE_AIRPLAY_METADATA
   /// Called on the main loop with the details of a new track; empty fields when the session ends
@@ -94,6 +106,7 @@ class AirPlayHub final : public Component, public ::airplay::AudioSink, public :
   void on_volume(float volume) override;
   void on_mute(bool muted) override;
   void on_metadata(const ::airplay::Metadata &metadata) override;
+  void on_progress(const ::airplay::Progress &progress) override;
   void on_remote_target(const ::airplay::RemoteTarget &target) override;
 #ifdef USE_AIRPLAY_ARTWORK
   bool on_artwork_begin(::airplay::ArtworkFormat format, size_t size) override;
@@ -136,6 +149,7 @@ class AirPlayHub final : public Component, public ::airplay::AudioSink, public :
   // Configuration
   const char *name_;
   const char *model_{"ESPHome"};
+  const char *password_{nullptr};
   uint32_t buffer_duration_ms_{500};
   uint16_t port_;
   bool task_stack_in_psram_{false};
@@ -179,11 +193,30 @@ class AirPlayHub final : public Component, public ::airplay::AudioSink, public :
   LazyCallbackManager<void(const ::airplay::Metadata &)> metadata_callback_;
 #endif
 
+#ifdef USE_AIRPLAY_PROGRESS
+  void update_progress_clock_();
+
+  ::airplay::Progress progress_{};  // Guarded by lock_
+  std::atomic<bool> progress_changed_{false};
+  // Main loop only: the position was progress_base_ms_ at progress_since_ms_, and advances while running
+  uint32_t progress_base_ms_{0};
+  uint32_t progress_since_ms_{0};
+  uint32_t progress_duration_ms_{0};
+  bool progress_running_{false};
+  LazyCallbackManager<void()> progress_callback_;
+#endif
+
   bool wifi_streaming_{false};  // Main loop only
 };
 
 /// Base class of the hub's children
 class AirPlayChild : public Component, public Parented<AirPlayHub> {
+ public:
+  float get_setup_priority() const override { return airplay_priority::CHILD; }
+};
+
+/// Base class of the hub's children that poll
+class AirPlayPollingChild : public PollingComponent, public Parented<AirPlayHub> {
  public:
   float get_setup_priority() const override { return airplay_priority::CHILD; }
 };

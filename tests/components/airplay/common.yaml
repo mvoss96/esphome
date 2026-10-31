@@ -41,6 +41,9 @@ text_sensor:
   - platform: airplay
     type: album
     name: AirPlay Album
+  - platform: airplay
+    type: album_artist
+    name: AirPlay Album Artist
 
 sensor:
   - platform: airplay
@@ -50,3 +53,9 @@ sensor:
   - platform: airplay
     type: track_duration
     name: AirPlay Track Duration
+  - platform: airplay
+    type: year
+    name: AirPlay Year
+  - platform: airplay
+    type: track
+    name: AirPlay Track

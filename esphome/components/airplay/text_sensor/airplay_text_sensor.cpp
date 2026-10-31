@@ -18,6 +18,9 @@ void AirPlayTextSensor::setup() {
       case AirPlayMetadataType::AIRPLAY_METADATA_TYPE_ALBUM:
         value = metadata.album;
         break;
+      case AirPlayMetadataType::AIRPLAY_METADATA_TYPE_ALBUM_ARTIST:
+        value = metadata.album_artist;
+        break;
       default:
         value = metadata.title;
         break;

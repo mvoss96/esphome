@@ -13,6 +13,7 @@ enum class AirPlayMetadataType : uint8_t {
   AIRPLAY_METADATA_TYPE_TITLE,
   AIRPLAY_METADATA_TYPE_ARTIST,
   AIRPLAY_METADATA_TYPE_ALBUM,
+  AIRPLAY_METADATA_TYPE_ALBUM_ARTIST,
 };
 
 /// A detail of the track that plays over AirPlay; empty when no track plays

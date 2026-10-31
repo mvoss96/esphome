@@ -370,6 +370,10 @@ void AirPlayHub::on_volume(float volume) {
 }
 
 void AirPlayHub::on_mute(bool muted) {
+  // The sender's slider is at the bottom: volume steps down cannot move it any further
+  float reported = this->reported_volume_.load(std::memory_order_relaxed);
+  if (muted && reported > 0.0f)
+    this->reported_volume_.compare_exchange_strong(reported, 0.0f, std::memory_order_relaxed);
   if (this->media_source_ != nullptr)
     this->media_source_->on_sender_mute(muted);
 }
@@ -521,9 +525,11 @@ bool AirPlayHub::step_volume_(const RemoteState &remote) {
     if (this->wait_for_report_(before, VOLUME_STEP_WAIT_MS)) {
       position = this->reported_volume_.load(std::memory_order_relaxed);
     } else {
-      // No report: assume the step was taken
+      // No report: assume the step was taken, also for the next adjustment
       const float step = steps > 0 ? ::airplay::DACP_VOLUME_STEP : -::airplay::DACP_VOLUME_STEP;
       position = std::clamp(position + step, 0.0f, 1.0f);
+      float expected = before;
+      this->reported_volume_.compare_exchange_strong(expected, position, std::memory_order_relaxed);
     }
   }
   return true;

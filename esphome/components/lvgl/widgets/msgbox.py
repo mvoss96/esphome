@@ -1,4 +1,5 @@
 from esphome import codegen as cg, config_validation as cv
+from esphome.components.const import CONF_TITLE
 from esphome.const import CONF_BUTTON, CONF_ID, CONF_TEXT
 from esphome.core import ID
 from esphome.cpp_generator import MockObjClass
@@ -13,7 +14,6 @@ from ..defines import (
     CONF_MAIN,
     CONF_MSGBOXES,
     CONF_SRC,
-    CONF_TITLE,
     LV_OBJ_FLAG,
     TYPE_FLEX,
     add_lv_use,

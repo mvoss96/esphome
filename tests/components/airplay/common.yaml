@@ -1,0 +1,61 @@
+wifi:
+  ap:
+
+speaker:
+  - platform: i2s_audio
+    id: airplay_speaker_id
+    i2s_audio_id: i2s_audio_bus
+    dac_type: external
+    i2s_dout_pin: ${i2s_dout_pin}
+    sample_rate: 44100
+    num_channels: 2
+
+airplay:
+  id: airplay_hub
+  name: ESPHome Speaker
+  model: Test Speaker
+  password: secret
+  port: 5000
+
+media_source:
+  - platform: airplay
+    id: airplay_source
+    buffer_duration: 750ms
+
+media_player:
+  - platform: speaker_source
+    id: airplay_media_player
+    name: AirPlay Media Player
+    media_pipeline:
+      speaker: airplay_speaker_id
+      sources:
+        - airplay_source
+
+text_sensor:
+  - platform: airplay
+    type: title
+    name: AirPlay Title
+  - platform: airplay
+    type: artist
+    name: AirPlay Artist
+  - platform: airplay
+    type: album
+    name: AirPlay Album
+  - platform: airplay
+    type: album_artist
+    name: AirPlay Album Artist
+
+sensor:
+  - platform: airplay
+    type: track_progress
+    name: AirPlay Track Progress
+    update_interval: 500ms
+  - platform: airplay
+    type: track_duration
+    name: AirPlay Track Duration
+  - platform: airplay
+    type: year
+    name: AirPlay Year
+  - platform: airplay
+    type: track
+    name: AirPlay Track

@@ -79,10 +79,26 @@ int HOT JpegDecoder::decode(uint8_t *buffer, size_t size) {
 
   this->jpeg_.setUserPointer(this);
   this->jpeg_.setPixelType(RGB8888);
-  if (!this->set_size(this->jpeg_.getWidth(), this->jpeg_.getHeight())) {
+  const int width = this->jpeg_.getWidth();
+  const int height = this->jpeg_.getHeight();
+  if (!this->set_size(width, height)) {
     return DECODE_ERROR_OUT_OF_MEMORY;
   }
-  if (!this->jpeg_.decode(0, 0, 0)) {
+  // Decode at 1/2, 1/4 or 1/8 of the size while that is still at least as large as the buffer. Much faster for
+  // images that are scaled down a lot, and the picture is averaged instead of sampled.
+  int scale = 1;
+  while (scale < 8 && width / (scale * 2) >= this->image_->get_buffer_width() &&
+         height / (scale * 2) >= this->image_->get_buffer_height()) {
+    scale *= 2;
+  }
+  int options = 0;
+  if (scale > 1) {
+    options = scale == 2 ? JPEG_SCALE_HALF : (scale == 4 ? JPEG_SCALE_QUARTER : JPEG_SCALE_EIGHTH);
+    this->x_scale_ = static_cast<double>(this->image_->get_buffer_width()) * scale / width;
+    this->y_scale_ = static_cast<double>(this->image_->get_buffer_height()) * scale / height;
+    ESP_LOGV(TAG, "Decoding at 1/%d of the size", scale);
+  }
+  if (!this->jpeg_.decode(0, 0, options)) {
     auto error = this->jpeg_.getLastError();
     ESP_LOGE(TAG, "Error while decoding: %d", error);
     this->jpeg_.close();

@@ -1,4 +1,4 @@
-"""AirPlay 1 (RAOP) receiver, built on the airplay-cpp library."""
+"""AirPlay receiver, built on the airplay-cpp library."""
 
 import esphome.codegen as cg
 from esphome.components import esp32, psram, socket, wifi
@@ -26,10 +26,11 @@ DEPENDENCIES = ["network"]
 DOMAIN = "airplay"
 
 CONF_AIRPLAY_ID = "airplay_id"
+CONF_AIRPLAY2 = "airplay2"
 
 # The AirPlay protocol is handled by the airplay-cpp library
 AIRPLAY_CPP_REPO = "https://github.com/mvoss96/airplay-cpp.git"
-AIRPLAY_CPP_VERSION = "9c1eec60ef67ded08d52a4ec379776a88e12796d"
+AIRPLAY_CPP_VERSION = "34862c6c68bb93766958537ea952d9e700fc5742"
 
 # Room for a burst of audio packets between two reads of a UDP socket
 UDP_RECEIVE_QUEUE_SIZE = 32
@@ -45,6 +46,15 @@ def _set_default_name(config: ConfigType) -> ConfigType:
     return config
 
 
+def _validate_airplay2(config: ConfigType) -> ConfigType:
+    if config[CONF_AIRPLAY2] and CONF_PASSWORD in config:
+        raise cv.Invalid(
+            f"'{CONF_AIRPLAY2}' cannot be used with '{CONF_PASSWORD}'",
+            path=[CONF_AIRPLAY2],
+        )
+    return config
+
+
 def _request_network_features(config: ConfigType) -> ConfigType:
     # Wi-Fi power saving and roaming scans cause dropouts while streaming
     wifi.enable_runtime_power_save_control()
@@ -53,10 +63,11 @@ def _request_network_features(config: ConfigType) -> ConfigType:
 
 
 def _consume_sockets(config: ConfigType) -> ConfigType:
-    # The RTSP server, two RTSP connections plus one remote control connection,
-    # and the audio, control and timing sockets of a playback session
+    # The RTSP server, two RTSP connections plus one remote control connection (and
+    # the event connection of an AirPlay 2 sender), and the audio, control and timing
+    # sockets of a playback session
     socket.consume_sockets(1, DOMAIN, socket.SocketType.TCP_LISTEN)(config)
-    socket.consume_sockets(3, DOMAIN)(config)
+    socket.consume_sockets(4 if config[CONF_AIRPLAY2] else 3, DOMAIN)(config)
     socket.consume_sockets(3, DOMAIN, socket.SocketType.UDP)(config)
     return config
 
@@ -72,10 +83,14 @@ CONFIG_SCHEMA = cv.All(
                 cv.string_strict, cv.Length(min=1, max=64)
             ),
             cv.Optional(CONF_PORT, default=5000): cv.port,
+            # Experimental: AirPlay 2 with realtime audio; senders without AirPlay 1
+            # (e.g. current iOS) need it
+            cv.Optional(CONF_AIRPLAY2, default=False): cv.boolean,
             cv.Optional(CONF_TASK_STACK_IN_PSRAM): psram.validate_task_stack_in_psram,
         }
     ).extend(cv.COMPONENT_SCHEMA),
     cv.only_on_esp32,
+    _validate_airplay2,
     _set_default_name,
     _consume_sockets,
     _request_network_features,
@@ -116,6 +131,9 @@ async def to_code(config: ConfigType) -> None:
 
     if (password := config.get(CONF_PASSWORD)) is not None:
         cg.add(var.set_password(password))
+
+    if config[CONF_AIRPLAY2]:
+        cg.add(var.set_airplay2(True))
 
     if config.get(CONF_TASK_STACK_IN_PSRAM):
         cg.add(var.set_task_stack_in_psram(True))

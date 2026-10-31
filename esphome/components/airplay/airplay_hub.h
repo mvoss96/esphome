@@ -32,9 +32,9 @@ class AirPlayMediaSource;
 class AirPlayImage;
 #endif
 
-/// AirPlay 1 (RAOP) receiver. The protocol is handled by the airplay-cpp library; the hub runs it on its own task,
-/// announces it through mDNS and controls the sender. The media source, text sensors and cover art image are its
-/// children.
+/// AirPlay 1 (RAOP) and, optionally, AirPlay 2 receiver. The protocol is handled by the airplay-cpp library; the hub
+/// runs it on its own task, announces it through mDNS and controls the sender. The media source, text sensors and cover
+/// art image are its children.
 ///
 /// THREADING: the library calls write() and the Listener methods on the AirPlay task. Remote control commands to the
 /// sender run on a task of their own, because they may block for a few seconds. Children are notified on the main
@@ -62,6 +62,7 @@ class AirPlayHub final : public Component, public ::airplay::AudioSink, public :
   void set_task_stack_in_psram(bool task_stack_in_psram) { this->task_stack_in_psram_ = task_stack_in_psram; }
   void set_model(const char *model) { this->model_ = model; }
   void set_password(const char *password) { this->password_ = password; }
+  void set_airplay2(bool airplay2) { this->airplay2_ = airplay2; }
   void set_buffer_duration(uint32_t buffer_duration_ms) { this->buffer_duration_ms_ = buffer_duration_ms; }
   void set_media_source(AirPlayMediaSource *media_source) { this->media_source_ = media_source; }
 #ifdef USE_AIRPLAY_ARTWORK
@@ -152,6 +153,7 @@ class AirPlayHub final : public Component, public ::airplay::AudioSink, public :
   const char *password_{nullptr};
   uint32_t buffer_duration_ms_{500};
   uint16_t port_;
+  bool airplay2_{false};
   bool task_stack_in_psram_{false};
 
   AirPlayMediaSource *media_source_{nullptr};

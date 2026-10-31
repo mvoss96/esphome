@@ -118,6 +118,8 @@ void AirPlayHub::setup() {
 #ifdef USE_AIRPLAY_PROGRESS
   config.progress = true;
 #endif
+  config.airplay2 = this->airplay2_;
+  config.random = [](uint8_t *buffer, size_t length) { random_bytes(buffer, length); };
   config.allocate = allocate_buffer;
   config.deallocate = heap_caps_free;
   this->receiver_ = std::make_unique<::airplay::Receiver>(config, this->crypto_, this->runner_, *this, this);
@@ -148,10 +150,12 @@ void AirPlayHub::dump_config() {
                 "  Model: %s\n"
                 "  Port: %u\n"
                 "  Password: %s\n"
+                "  AirPlay 2: %s\n"
                 "  Buffer duration: %" PRIu32 " ms\n"
                 "  Task stack in PSRAM: %s\n"
                 "  airplay-cpp: " AIRPLAY_CPP_VERSION,
-                this->name_, this->model_, this->port_, YESNO(this->password_ != nullptr), this->buffer_duration_ms_,
+                this->name_, this->model_, this->port_, YESNO(this->password_ != nullptr),
+                YESNO(this->receiver_ != nullptr && this->receiver_->airplay2_enabled()), this->buffer_duration_ms_,
                 YESNO(this->task_stack_in_psram_));
 }
 
@@ -175,23 +179,36 @@ void AirPlayHub::remote_task(void *params) {
   }
 }
 
-void AirPlayHub::register_mdns_service_() {
-  char instance[64];
-  this->receiver_->service_instance_name(instance, sizeof(instance));
-  size_t count = 0;
-  const ::airplay::TxtRecord *records = this->receiver_->txt_records(&count);
+/// Adds an mDNS service unless it is already registered or has no TXT records
+static bool add_mdns_service(const char *instance, const char *type, uint16_t port, const ::airplay::TxtRecord *records,
+                             size_t count) {
+  if (count == 0 || mdns_service_exists(type, "_tcp", nullptr))
+    return true;
   mdns_txt_item_t txt[MAX_TXT_RECORDS];
   count = std::min(count, MAX_TXT_RECORDS);
   for (size_t i = 0; i < count; i++)
     txt[i] = mdns_txt_item_t{records[i].key, records[i].value};
-
-  const esp_err_t err = mdns_service_add(instance, "_raop", "_tcp", this->port_, txt, count);
+  const esp_err_t err = mdns_service_add(instance, type, "_tcp", port, txt, count);
   if (err != ESP_OK) {
-    ESP_LOGW(TAG, "Failed to register the mDNS service, retrying: %s", esp_err_to_name(err));
-    this->set_timeout(MDNS_RETRY_ID, MDNS_RETRY_INTERVAL_MS, [this]() { this->register_mdns_service_(); });
-    return;
+    ESP_LOGW(TAG, "Failed to register the mDNS service %s, retrying: %s", type, esp_err_to_name(err));
+    return false;
   }
-  ESP_LOGD(TAG, "Registered mDNS service %s", instance);
+  ESP_LOGD(TAG, "Registered mDNS service %s.%s._tcp", instance, type);
+  return true;
+}
+
+void AirPlayHub::register_mdns_service_() {
+  char instance[64];
+  this->receiver_->service_instance_name(instance, sizeof(instance));
+  size_t raop_count = 0;
+  const ::airplay::TxtRecord *raop = this->receiver_->txt_records(&raop_count);
+  // AirPlay 2 senders look for _airplay._tcp, whose instance name is the plain name; none without AirPlay 2
+  size_t airplay_count = 0;
+  const ::airplay::TxtRecord *airplay = this->receiver_->airplay_txt_records(&airplay_count);
+  if (!add_mdns_service(instance, "_raop", this->port_, raop, raop_count) ||
+      !add_mdns_service(this->name_, "_airplay", this->port_, airplay, airplay_count)) {
+    this->set_timeout(MDNS_RETRY_ID, MDNS_RETRY_INTERVAL_MS, [this]() { this->register_mdns_service_(); });
+  }
 }
 
 // THREAD CONTEXT: Main loop. Woken by the AirPlay task.

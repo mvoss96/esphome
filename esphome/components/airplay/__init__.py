@@ -31,7 +31,7 @@ CONF_AIRPLAY2_FEATURES = "airplay2_features"
 
 # The AirPlay protocol is handled by the airplay-cpp library
 AIRPLAY_CPP_REPO = "https://github.com/mvoss96/airplay-cpp.git"
-AIRPLAY_CPP_VERSION = "2e7bbd3e1520d5127dfca678c16b9be2c5efed4e"
+AIRPLAY_CPP_VERSION = "f1a3058bf868b10113973d8f2977629c9182fa08"
 
 # Room for a burst of audio packets between two reads of a UDP socket
 UDP_RECEIVE_QUEUE_SIZE = 32

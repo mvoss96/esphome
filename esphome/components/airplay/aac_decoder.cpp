@@ -14,6 +14,24 @@
 #include <cinttypes>
 #include <cstring>
 
+// esp_audio_codec allocates through these hooks, which it defines weakly with malloc(). Plain malloc() never uses
+// PSRAM in ESPHome, and the AAC decoder takes about 50 KB, so its memory goes to PSRAM where there is some.
+// Conflicts with ESP-ADF's media_lib_sal, which defines them too.
+extern "C" {
+void *media_lib_module_malloc(const char * /*module*/, size_t size) {
+  return heap_caps_malloc_prefer(size, 2, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT, MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
+}
+void *media_lib_module_calloc(const char * /*module*/, size_t num, size_t size) {
+  return heap_caps_calloc_prefer(num, size, 2, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT,
+                                 MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
+}
+void *media_lib_module_realloc(const char * /*module*/, void *buffer, size_t size) {
+  return heap_caps_realloc_prefer(buffer, size, 2, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT,
+                                  MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
+}
+void media_lib_free(void *buffer) { heap_caps_free(buffer); }
+}
+
 namespace esphome::airplay_ {
 
 ESPHOME_LOG_TAG(TAG, "airplay.aac");

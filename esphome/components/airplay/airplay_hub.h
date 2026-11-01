@@ -10,6 +10,8 @@
 
 #include <airplay.h>
 
+#include "aac_decoder.h"
+
 #include <freertos/FreeRTOS.h>
 #include <freertos/semphr.h>
 
@@ -64,6 +66,9 @@ class AirPlayHub final : public Component, public ::airplay::AudioSink, public :
   void set_password(const char *password) { this->password_ = password; }
   void set_airplay2(bool airplay2) { this->airplay2_ = airplay2; }
   void set_airplay2_features(uint64_t features) { this->airplay2_features_ = features; }
+#ifdef USE_AIRPLAY_AAC
+  void set_aac_buffer_size(uint32_t size) { this->aac_buffer_size_ = size; }
+#endif
   void set_buffer_duration(uint32_t buffer_duration_ms) { this->buffer_duration_ms_ = buffer_duration_ms; }
   void set_media_source(AirPlayMediaSource *media_source) { this->media_source_ = media_source; }
 #ifdef USE_AIRPLAY_ARTWORK
@@ -155,6 +160,10 @@ class AirPlayHub final : public Component, public ::airplay::AudioSink, public :
   uint32_t buffer_duration_ms_{500};
   uint16_t port_;
   uint64_t airplay2_features_{0};
+#ifdef USE_AIRPLAY_AAC
+  AirPlayAacDecoder aac_decoder_;
+  uint32_t aac_buffer_size_{0};
+#endif
   bool airplay2_{false};
   bool task_stack_in_psram_{false};
 

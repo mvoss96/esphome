@@ -17,6 +17,8 @@ dependencies:
     version: 0.4.1
   esphome/micro-wav:
     version: 0.2.0
+  espressif/esp_audio_codec:
+    version: 2.5.0
   espressif/esp-dsp:
     version: "1.8.2"
   espressif/esp-tflite-micro:
@@ -94,7 +96,7 @@ dependencies:
   # airplay
   mvoss96/airplay-cpp:
     git: https://github.com/mvoss96/airplay-cpp.git
-    version: f1a3058bf868b10113973d8f2977629c9182fa08
+    version: beeb1d9d9e46ac6637c6f5ed6df2df7eb6c2ca08
   espressif/mqtt:
     version: "1.0.0"
     rules:

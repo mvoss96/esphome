@@ -28,10 +28,11 @@ DOMAIN = "airplay"
 CONF_AIRPLAY_ID = "airplay_id"
 CONF_AIRPLAY2 = "airplay2"
 CONF_AIRPLAY2_FEATURES = "airplay2_features"
+CONF_AAC_BUFFER_SIZE = "aac_buffer_size"
 
 # The AirPlay protocol is handled by the airplay-cpp library
 AIRPLAY_CPP_REPO = "https://github.com/mvoss96/airplay-cpp.git"
-AIRPLAY_CPP_VERSION = "f1a3058bf868b10113973d8f2977629c9182fa08"
+AIRPLAY_CPP_VERSION = "beeb1d9d9e46ac6637c6f5ed6df2df7eb6c2ca08"
 
 # Room for a burst of audio packets between two reads of a UDP socket
 UDP_RECEIVE_QUEUE_SIZE = 32
@@ -65,10 +66,10 @@ def _request_network_features(config: ConfigType) -> ConfigType:
 
 def _consume_sockets(config: ConfigType) -> ConfigType:
     # The RTSP server, two RTSP connections plus one remote control connection (and
-    # the event connection of an AirPlay 2 sender), and the audio, control and timing
-    # sockets of a playback session
+    # the event and buffered audio connections of an AirPlay 2 sender), and the audio,
+    # control and timing sockets of a playback session
     socket.consume_sockets(1, DOMAIN, socket.SocketType.TCP_LISTEN)(config)
-    socket.consume_sockets(4 if config[CONF_AIRPLAY2] else 3, DOMAIN)(config)
+    socket.consume_sockets(5 if config[CONF_AIRPLAY2] else 3, DOMAIN)(config)
     socket.consume_sockets(3, DOMAIN, socket.SocketType.UDP)(config)
     return config
 
@@ -89,6 +90,11 @@ CONFIG_SCHEMA = cv.All(
             cv.Optional(CONF_AIRPLAY2, default=False): cv.boolean,
             # For experiments: the AirPlay 2 feature bits to announce
             cv.Optional(CONF_AIRPLAY2_FEATURES): cv.hex_uint64_t,
+            # Compressed audio that AirPlay 2 senders send ahead (AAC at 256 kbit/s
+            # takes 32 KB per second); decoded into the media source's buffer
+            cv.Optional(CONF_AAC_BUFFER_SIZE, default=131072): cv.int_range(
+                min=32768, max=1048576
+            ),
             cv.Optional(CONF_TASK_STACK_IN_PSRAM): psram.validate_task_stack_in_psram,
         }
     ).extend(cv.COMPONENT_SCHEMA),
@@ -137,6 +143,10 @@ async def to_code(config: ConfigType) -> None:
 
     if config[CONF_AIRPLAY2]:
         cg.add(var.set_airplay2(True))
+        # Buffered audio (AAC), which iOS uses for most apps
+        cg.add_define("USE_AIRPLAY_AAC")
+        cg.add(var.set_aac_buffer_size(config[CONF_AAC_BUFFER_SIZE]))
+        esp32.add_idf_component(name="espressif/esp_audio_codec", ref="2.5.0")
     if (features := config.get(CONF_AIRPLAY2_FEATURES)) is not None:
         cg.add(var.set_airplay2_features(features))
 

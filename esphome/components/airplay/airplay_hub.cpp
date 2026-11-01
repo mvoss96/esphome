@@ -120,6 +120,10 @@ void AirPlayHub::setup() {
 #endif
   config.airplay2 = this->airplay2_;
   config.airplay2_features = this->airplay2_features_;
+#ifdef USE_AIRPLAY_AAC
+  config.aac_decoder = &this->aac_decoder_;
+  config.buffered_audio_bytes = this->aac_buffer_size_;
+#endif
   config.random = [](uint8_t *buffer, size_t length) { random_bytes(buffer, length); };
   config.allocate = allocate_buffer;
   config.deallocate = heap_caps_free;

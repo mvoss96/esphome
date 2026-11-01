@@ -277,7 +277,9 @@ bool AirPlayImage::decode_() {
     size_t end = size;
     while (end >= 2 && (this->encoded_[end - 2] != 0xFF || this->encoded_[end - 1] != 0xD9))
       end--;
-    if (end != size) {
+    if (end < 2 && size == this->max_size_) {
+      ESP_LOGW(TAG, "Cover art is larger than max_size (%zu bytes) and was cut off; raise max_size to show it", size);
+    } else if (end != size) {
       ESP_LOGD(TAG, "JPEG end marker at byte %zu of %zu%s", end, size,
                end < 2 ? LOG_STR_LITERAL(" (none: the image is cut off)") : LOG_STR_LITERAL(""));
     }

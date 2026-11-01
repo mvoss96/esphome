@@ -27,7 +27,7 @@ image:
     id: airplay_cover
     type: RGB565
     resize: 64x64
-    max_size: 300kB
+    max_size: 100kB
     on_image_update:
       # Points the widget at the new picture, also after its size changed
       - lvgl.image.update:

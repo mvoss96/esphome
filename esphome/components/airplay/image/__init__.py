@@ -23,8 +23,9 @@ CONF_ON_IMAGE_ERROR = "on_image_error"
 # Senders send JPEG or PNG; AUTO decodes both
 FORMATS = ("AUTO", "JPEG", "JPG", "PNG")
 
-# Cover art from Apple senders is usually 20 to 200 KB of JPEG
-DEFAULT_MAX_SIZE = 256 * 1024
+# Cover art from Apple senders is usually 20 to 100 KB of JPEG, which iOS pads (e.g. to 176 KB); of a larger
+# JPEG the first max_size bytes are kept, and it is shown if it ends within them
+DEFAULT_MAX_SIZE = 128 * 1024
 MAX_IMAGE_DIMENSION = 32767
 
 AirPlayImage = airplay_ns.class_("AirPlayImage", cg.Component, Image_)

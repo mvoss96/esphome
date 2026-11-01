@@ -142,8 +142,14 @@ bool AirPlayImage::artwork_begin(bool png, size_t size) {
     return false;
   }
   if (size > this->max_size_) {
-    ESP_LOGW(TAG, "Skipping cover art of %zu bytes, larger than max_size (%zu bytes)", size, this->max_size_);
-    return false;
+    if (png) {
+      ESP_LOGW(TAG, "Skipping cover art of %zu bytes, larger than max_size (%zu bytes)", size, this->max_size_);
+      return false;
+    }
+    // iOS pads JPEG cover art, e.g. a 60 KB image to 176 KB: the start is kept, and the image decodes if it ends
+    // within it
+    ESP_LOGD(TAG, "Keeping %zu of %zu bytes of cover art", this->max_size_, size);
+    size = this->max_size_;
   }
   // An image that waits for the decode task is replaced; one that is being decoded cannot be
   uint8_t state = this->encoded_state_.load(std::memory_order_acquire);

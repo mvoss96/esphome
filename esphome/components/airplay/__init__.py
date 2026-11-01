@@ -32,7 +32,7 @@ CONF_AAC_BUFFER_SIZE = "aac_buffer_size"
 
 # The AirPlay protocol is handled by the airplay-cpp library
 AIRPLAY_CPP_REPO = "https://github.com/mvoss96/airplay-cpp.git"
-AIRPLAY_CPP_VERSION = "9cfee797632de9fbb7024a07d232360722cdb986"
+AIRPLAY_CPP_VERSION = "c433456285437a5503a347bcd6a4ded3288c69f8"
 
 # Room for a burst of audio packets between two reads of a UDP socket
 UDP_RECEIVE_QUEUE_SIZE = 32
@@ -65,11 +65,12 @@ def _request_network_features(config: ConfigType) -> ConfigType:
 
 
 def _consume_sockets(config: ConfigType) -> ConfigType:
-    # The RTSP server, two RTSP connections plus one remote control connection (and
-    # the event and buffered audio connections of an AirPlay 2 sender), and the audio,
-    # control and timing sockets of a playback session
+    # The RTSP server, two RTSP connections plus one remote control connection (with
+    # AirPlay 2 also the event and buffered audio connections, a second session's event
+    # connection and one for short requests), and the audio, control and timing sockets
+    # of a playback session
     socket.consume_sockets(1, DOMAIN, socket.SocketType.TCP_LISTEN)(config)
-    socket.consume_sockets(5 if config[CONF_AIRPLAY2] else 3, DOMAIN)(config)
+    socket.consume_sockets(7 if config[CONF_AIRPLAY2] else 3, DOMAIN)(config)
     socket.consume_sockets(3, DOMAIN, socket.SocketType.UDP)(config)
     return config
 

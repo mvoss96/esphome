@@ -13,6 +13,7 @@
 #include <cinttypes>
 #include <cstdint>
 #include <cstring>
+#include <new>
 
 namespace esphome::airplay_ {
 
@@ -160,8 +161,17 @@ void AirPlayImage::setup() {
     return;
   }
 #ifdef USE_RUNTIME_IMAGE_JPEG
-  if (this->sink_.get_format() != runtime_image::PNG)
-    this->jpeg_decoder_ = make_unique<AirPlayJpegDecoder>(&this->sink_, this);
+  if (this->sink_.get_format() != runtime_image::PNG) {
+    // About 20 KB of JPEGDEC state; in PSRAM when there is some, as internal RAM is short with Wi-Fi and audio
+    RAMAllocator<AirPlayJpegDecoder> decoder_allocator;
+    void *memory = decoder_allocator.allocate(1);
+    if (memory == nullptr) {
+      ESP_LOGE(TAG, "Could not allocate the JPEG decoder");
+      this->mark_failed();
+      return;
+    }
+    this->jpeg_decoder_ = new (memory) AirPlayJpegDecoder(&this->sink_, this);
+  }
 #endif
   // A black frame until the first cover arrives, so that LVGL can be given this image from the start
   this->set_frame_(0, this->max_width_, this->max_height_);

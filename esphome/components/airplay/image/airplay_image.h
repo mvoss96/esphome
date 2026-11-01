@@ -19,7 +19,6 @@
 #include <atomic>
 #include <cstddef>
 #include <cstdint>
-#include <memory>
 
 namespace esphome::airplay_ {
 
@@ -131,7 +130,7 @@ class AirPlayImage : public AirPlayChild, public image::Image {
 
   AirPlayDecodeSink sink_;
 #ifdef USE_RUNTIME_IMAGE_JPEG
-  std::unique_ptr<AirPlayJpegDecoder> jpeg_decoder_;
+  AirPlayJpegDecoder *jpeg_decoder_{nullptr};  // Lives as long as the image
 #endif
   image::Image *placeholder_;
   int max_width_;

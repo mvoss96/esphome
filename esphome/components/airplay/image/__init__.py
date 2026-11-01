@@ -1,5 +1,7 @@
 """Cover art of the track that plays over AirPlay, as an image (e.g. for LVGL)."""
 
+import logging
+
 from esphome import automation
 import esphome.codegen as cg
 from esphome.components import runtime_image
@@ -23,10 +25,9 @@ CONF_ON_IMAGE_ERROR = "on_image_error"
 # Senders send JPEG or PNG; AUTO decodes both
 FORMATS = ("AUTO", "JPEG", "JPG", "PNG")
 
-# Cover art from Apple senders is usually 20 to 100 KB of JPEG, which iOS pads (e.g. to 176 KB); of a larger
-# JPEG the first max_size bytes are kept, and it is shown if it ends within them
-DEFAULT_MAX_SIZE = 128 * 1024
 MAX_IMAGE_DIMENSION = 32767
+
+_LOGGER = logging.getLogger(__name__)
 
 AirPlayImage = airplay_ns.class_("AirPlayImage", cg.Component, Image_)
 
@@ -35,6 +36,18 @@ _CALLBACK_AUTOMATIONS = (
     automation.CallbackAutomation(CONF_ON_IMAGE_CLEAR, "add_on_image_clear_callback"),
     automation.CallbackAutomation(CONF_ON_IMAGE_ERROR, "add_on_image_error_callback"),
 )
+
+
+def _drop_max_size(config: ConfigType) -> ConfigType:
+    # Remove before 2027.6.0
+    if CONF_MAX_SIZE in config:
+        _LOGGER.warning(
+            "'%s' of the AirPlay cover art is no longer needed: images are decoded while "
+            "they arrive, whatever their size. Remove it from the configuration.",
+            CONF_MAX_SIZE,
+        )
+        config = {k: v for k, v in config.items() if k != CONF_MAX_SIZE}
+    return config
 
 
 def _validate_resize(config: ConfigType) -> ConfigType:
@@ -55,9 +68,7 @@ CONFIG_SCHEMA = cv.All(
             cv.Optional(CONF_FORMAT, default="AUTO"): cv.one_of(*FORMATS, upper=True),
             # Images are scaled down to fit, keeping their aspect ratio
             cv.Required(CONF_RESIZE): cv.dimensions,
-            cv.Optional(CONF_MAX_SIZE, default=DEFAULT_MAX_SIZE): cv.All(
-                cv.validate_bytes, cv.int_range(min=1024, max=1024 * 1024)
-            ),
+            cv.Optional(CONF_MAX_SIZE): cv.validate_bytes,
             cv.Optional(CONF_ON_IMAGE_UPDATE): automation.validate_automation({}),
             cv.Optional(CONF_ON_IMAGE_CLEAR): automation.validate_automation({}),
             cv.Optional(CONF_ON_IMAGE_ERROR): automation.validate_automation({}),
@@ -65,6 +76,7 @@ CONFIG_SCHEMA = cv.All(
     )
     .extend(cv.COMPONENT_SCHEMA),
     runtime_image.validate_runtime_image_settings,
+    _drop_max_size,
     _validate_resize,
     cv.only_on_esp32,
 )
@@ -113,7 +125,6 @@ async def to_code(config: ConfigType) -> None:
         settings.transparent,
         settings.placeholder or cg.nullptr,
         settings.byte_order_big_endian,
-        config[CONF_MAX_SIZE],
     )
     await cg.register_component(var, config)
     await automation.build_callback_automations(var, config, _CALLBACK_AUTOMATIONS)

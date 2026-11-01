@@ -118,6 +118,7 @@ class AirPlayHub final : public Component, public ::airplay::AudioSink, public :
 #ifdef USE_AIRPLAY_ARTWORK
   bool on_artwork_begin(::airplay::ArtworkFormat format, size_t size) override;
   void on_artwork_data(const uint8_t *data, size_t length) override;
+  size_t artwork_room() override;
   void on_artwork_end(bool complete) override;
   void on_artwork_clear() override;
 #endif

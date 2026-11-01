@@ -472,6 +472,7 @@ void AirPlayHub::on_artwork_data(const uint8_t *data, size_t length) {
   SlowCallLog slow_call(LOG_STR_LITERAL("Cover data"));
   this->artwork_image_->artwork_data(data, length);
 }
+size_t AirPlayHub::artwork_room() { return this->artwork_image_->artwork_room(); }
 void AirPlayHub::on_artwork_end(bool complete) {
   SlowCallLog slow_call(LOG_STR_LITERAL("Cover end"));
   this->artwork_image_->artwork_end(complete);

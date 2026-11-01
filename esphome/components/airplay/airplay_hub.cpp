@@ -119,6 +119,7 @@ void AirPlayHub::setup() {
   config.progress = true;
 #endif
   config.airplay2 = this->airplay2_;
+  config.airplay2_features = this->airplay2_features_;
   config.random = [](uint8_t *buffer, size_t length) { random_bytes(buffer, length); };
   config.allocate = allocate_buffer;
   config.deallocate = heap_caps_free;

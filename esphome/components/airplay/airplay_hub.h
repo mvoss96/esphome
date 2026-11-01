@@ -63,6 +63,7 @@ class AirPlayHub final : public Component, public ::airplay::AudioSink, public :
   void set_model(const char *model) { this->model_ = model; }
   void set_password(const char *password) { this->password_ = password; }
   void set_airplay2(bool airplay2) { this->airplay2_ = airplay2; }
+  void set_airplay2_features(uint64_t features) { this->airplay2_features_ = features; }
   void set_buffer_duration(uint32_t buffer_duration_ms) { this->buffer_duration_ms_ = buffer_duration_ms; }
   void set_media_source(AirPlayMediaSource *media_source) { this->media_source_ = media_source; }
 #ifdef USE_AIRPLAY_ARTWORK
@@ -153,6 +154,7 @@ class AirPlayHub final : public Component, public ::airplay::AudioSink, public :
   const char *password_{nullptr};
   uint32_t buffer_duration_ms_{500};
   uint16_t port_;
+  uint64_t airplay2_features_{0};
   bool airplay2_{false};
   bool task_stack_in_psram_{false};
 

@@ -27,10 +27,11 @@ DOMAIN = "airplay"
 
 CONF_AIRPLAY_ID = "airplay_id"
 CONF_AIRPLAY2 = "airplay2"
+CONF_AIRPLAY2_FEATURES = "airplay2_features"
 
 # The AirPlay protocol is handled by the airplay-cpp library
 AIRPLAY_CPP_REPO = "https://github.com/mvoss96/airplay-cpp.git"
-AIRPLAY_CPP_VERSION = "3a6275bb74772c5edddd2eefaa1c13d2fcaccb1b"
+AIRPLAY_CPP_VERSION = "bb6cb527e33bb93faa441fd5357a8782545b7d17"
 
 # Room for a burst of audio packets between two reads of a UDP socket
 UDP_RECEIVE_QUEUE_SIZE = 32
@@ -86,6 +87,8 @@ CONFIG_SCHEMA = cv.All(
             # Experimental: AirPlay 2 with realtime audio; senders without AirPlay 1
             # (e.g. current iOS) need it
             cv.Optional(CONF_AIRPLAY2, default=False): cv.boolean,
+            # For experiments: the AirPlay 2 feature bits to announce
+            cv.Optional(CONF_AIRPLAY2_FEATURES): cv.hex_uint64_t,
             cv.Optional(CONF_TASK_STACK_IN_PSRAM): psram.validate_task_stack_in_psram,
         }
     ).extend(cv.COMPONENT_SCHEMA),
@@ -134,6 +137,8 @@ async def to_code(config: ConfigType) -> None:
 
     if config[CONF_AIRPLAY2]:
         cg.add(var.set_airplay2(True))
+    if (features := config.get(CONF_AIRPLAY2_FEATURES)) is not None:
+        cg.add(var.set_airplay2_features(features))
 
     if config.get(CONF_TASK_STACK_IN_PSRAM):
         cg.add(var.set_task_stack_in_psram(True))

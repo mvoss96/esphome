@@ -336,6 +336,24 @@ void AirPlayHub::request_disconnect() {
 
 // THREAD CONTEXT: Any. Wakes the remote control task.
 void AirPlayHub::send_remote_request(uint8_t request) {
+  // AirPlay 2 senders take playback commands on their event connection; AirPlay 1 senders through remote control
+  static constexpr struct {
+    uint8_t request;
+    ::airplay::SenderCommand command;
+  } SENDER_COMMANDS[] = {
+      {REMOTE_REQUEST_PLAY, ::airplay::SenderCommand::SENDER_COMMAND_PLAY},
+      {REMOTE_REQUEST_PAUSE, ::airplay::SenderCommand::SENDER_COMMAND_PAUSE},
+      {REMOTE_REQUEST_NEXT, ::airplay::SenderCommand::SENDER_COMMAND_NEXT},
+      {REMOTE_REQUEST_PREVIOUS, ::airplay::SenderCommand::SENDER_COMMAND_PREVIOUS},
+  };
+  if (this->receiver_ != nullptr) {
+    for (const auto &entry : SENDER_COMMANDS) {
+      if ((request & entry.request) != 0 && this->receiver_->request_sender_command(entry.command))
+        request &= ~entry.request;
+    }
+    if (request == 0)
+      return;
+  }
   this->remote_requests_.fetch_or(request, std::memory_order_acq_rel);
   if (this->remote_task_.is_created())
     xTaskNotifyGive(this->remote_task_.get_handle());

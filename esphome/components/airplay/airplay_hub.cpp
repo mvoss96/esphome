@@ -349,6 +349,9 @@ void AirPlayHub::set_speaker_volume(float volume) {
   if (!this->sender_volume_.compare_exchange_strong(sender_volume, volume, std::memory_order_relaxed))
     return;
   this->remote_volume_.store(volume, std::memory_order_relaxed);
+  // AirPlay 2 senders take it on their event connection; AirPlay 1 senders through remote control (DACP)
+  if (this->receiver_ != nullptr && this->receiver_->request_sender_volume(volume))
+    return;
   this->send_remote_request(REMOTE_REQUEST_VOLUME);
 }
 

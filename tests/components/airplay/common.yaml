@@ -59,3 +59,12 @@ sensor:
   - platform: airplay
     type: track
     name: AirPlay Track
+
+script:
+  - id: airplay_remote_commands
+    then:
+      - airplay.play
+      - airplay.pause: airplay_hub
+      - airplay.next:
+          id: airplay_hub
+      - airplay.previous

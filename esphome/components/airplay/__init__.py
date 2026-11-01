@@ -1,5 +1,6 @@
 """AirPlay receiver, built on the airplay-cpp library."""
 
+from esphome import automation
 import esphome.codegen as cg
 from esphome.components import esp32, psram, socket, wifi
 from esphome.components.mdns import DOMAIN as MDNS_DOMAIN
@@ -127,6 +128,26 @@ def _final_validate(config: ConfigType) -> ConfigType:
 
 
 FINAL_VALIDATE_SCHEMA = _final_validate
+
+
+# Playback commands to the sender: on its event connection for AirPlay 2, through remote control (DACP) for
+# AirPlay 1. They also reach a sender that disconnected a short while ago, so "play" resumes it.
+_REMOTE_ACTION_SCHEMA = automation.maybe_simple_id(
+    {cv.GenerateID(): cv.use_id(AirPlayHub)}
+)
+for _name, _request in (
+    ("airplay.play", "REMOTE_REQUEST_PLAY"),
+    ("airplay.pause", "REMOTE_REQUEST_PAUSE"),
+    ("airplay.next", "REMOTE_REQUEST_NEXT"),
+    ("airplay.previous", "REMOTE_REQUEST_PREVIOUS"),
+):
+    automation.register_apply_action(
+        _name,
+        _REMOTE_ACTION_SCHEMA,
+        automation.ApplyCall(
+            f"send_remote_request(esphome::airplay_::AirPlayHub::{_request})"
+        ),
+    )
 
 
 async def to_code(config: ConfigType) -> None:

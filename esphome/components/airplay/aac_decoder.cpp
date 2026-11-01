@@ -2,12 +2,15 @@
 
 #ifdef USE_AIRPLAY_AAC
 
+#include "esphome/core/hal.h"
 #include "esphome/core/helpers.h"
 #include "esphome/core/log.h"
 
 #include <decoder/impl/esp_aac_dec.h>
 #include <esp_audio_dec.h>
 
+#include <algorithm>
+#include <cinttypes>
 #include <cstring>
 
 namespace esphome::airplay_ {
@@ -80,7 +83,12 @@ size_t AirPlayAacDecoder::decode(const uint8_t *data, size_t length, int16_t *sa
   frame.buffer = reinterpret_cast<uint8_t *>(samples);
   frame.len = static_cast<uint32_t>(max_frames * CHANNELS * sizeof(int16_t));
   esp_audio_dec_info_t info{};
+  const uint32_t start = micros();
   const esp_audio_err_t err = esp_aac_dec_decode(this->decoder_, &raw, &frame, &info);
+  const uint32_t took = micros() - start;
+  this->total_us_ += took;
+  this->max_us_ = std::max(this->max_us_, took);
+  this->count_++;
   if (err != ESP_AUDIO_ERR_OK || info.channel != CHANNELS) {
     // A broken frame can leave the decoder in a bad state
     ESP_LOGW(TAG, "Failed to decode a frame (%d), restarting the decoder", static_cast<int>(err));
@@ -89,6 +97,16 @@ size_t AirPlayAacDecoder::decode(const uint8_t *data, size_t length, int16_t *sa
     return 0;
   }
   return frame.decoded_size / (CHANNELS * sizeof(int16_t));
+}
+
+void AirPlayAacDecoder::end() {
+  if (this->count_ > 0) {
+    ESP_LOGD(TAG, "Decoded %" PRIu32 " packets: %" PRIu32 " us on average, at most %" PRIu32 " us", this->count_,
+             static_cast<uint32_t>(this->total_us_ / this->count_), this->max_us_);
+  }
+  this->total_us_ = 0;
+  this->max_us_ = 0;
+  this->count_ = 0;
 }
 
 }  // namespace esphome::airplay_

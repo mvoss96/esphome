@@ -57,6 +57,27 @@ static constexpr uint32_t MDNS_RETRY_INTERVAL_MS = 5000;
 
 static constexpr size_t MAX_TXT_RECORDS = 20;
 
+/// Logs a warning when the scope it lives in takes longer than SLOW_CALL_US. Placed around the work done on the
+/// AirPlay task outside the library, which delays playback and the handling of requests.
+class SlowCallLog {
+ public:
+  static constexpr uint32_t SLOW_CALL_US = 20000;
+
+  explicit SlowCallLog(const char *name) : name_(name), start_(micros()) {}
+  ~SlowCallLog() {
+    const uint32_t took_ms = (micros() - this->start_) / 1000;
+    if (took_ms >= SLOW_CALL_US / 1000) {
+      ESP_LOGW(TAG, "%s took %" PRIu32 " ms", this->name_, took_ms);
+    }
+  }
+  SlowCallLog(const SlowCallLog &) = delete;
+  SlowCallLog &operator=(const SlowCallLog &) = delete;
+
+ protected:
+  const char *name_;
+  uint32_t start_;
+};
+
 static void library_log(::airplay::LogLevel level, const char *message) {
   switch (level) {
     case ::airplay::LogLevel::LOG_LEVEL_ERROR:
@@ -340,6 +361,7 @@ void AirPlayHub::notify_played(uint32_t frames, int64_t timestamp) {
 // ===== AirPlay task =====
 
 size_t AirPlayHub::write(const int16_t *samples, size_t frames) {
+  SlowCallLog slow_call(LOG_STR_LITERAL("Audio output"));
   if (this->media_source_ == nullptr)
     return frames;
   // An output may take only part of a frame. The rest of that frame goes out before anything else, so that the
@@ -365,6 +387,7 @@ size_t AirPlayHub::write(const int16_t *samples, size_t frames) {
 }
 
 void AirPlayHub::on_session_state(::airplay::SessionState state) {
+  SlowCallLog slow_call(LOG_STR_LITERAL("Session state change"));
   if (state == ::airplay::SessionState::NONE) {
     this->sender_volume_.store(-1.0f, std::memory_order_relaxed);
     this->reported_volume_.store(-1.0f, std::memory_order_relaxed);
@@ -382,6 +405,7 @@ void AirPlayHub::on_session_state(::airplay::SessionState state) {
 }
 
 void AirPlayHub::on_volume(float volume) {
+  SlowCallLog slow_call(LOG_STR_LITERAL("Volume change"));
   this->reported_volume_.store(volume, std::memory_order_relaxed);
   // While the volume is moved from here, the sender reports each step; the target is already set here
   if (this->volume_adjusting_.load(std::memory_order_relaxed))
@@ -392,6 +416,7 @@ void AirPlayHub::on_volume(float volume) {
 }
 
 void AirPlayHub::on_mute(bool muted) {
+  SlowCallLog slow_call(LOG_STR_LITERAL("Mute change"));
   // The sender's slider is at the bottom: volume steps down cannot move it any further
   float reported = this->reported_volume_.load(std::memory_order_relaxed);
   if (muted && reported > 0.0f)
@@ -401,6 +426,7 @@ void AirPlayHub::on_mute(bool muted) {
 }
 
 void AirPlayHub::on_metadata(const ::airplay::Metadata &metadata) {
+  SlowCallLog slow_call(LOG_STR_LITERAL("Track details"));
 #ifdef USE_AIRPLAY_METADATA
   xSemaphoreTake(this->lock_, portMAX_DELAY);
   this->metadata_ = metadata;
@@ -411,6 +437,7 @@ void AirPlayHub::on_metadata(const ::airplay::Metadata &metadata) {
 }
 
 void AirPlayHub::on_progress(const ::airplay::Progress &progress) {
+  SlowCallLog slow_call(LOG_STR_LITERAL("Track position"));
 #ifdef USE_AIRPLAY_PROGRESS
   xSemaphoreTake(this->lock_, portMAX_DELAY);
   this->progress_ = progress;
@@ -422,6 +449,7 @@ void AirPlayHub::on_progress(const ::airplay::Progress &progress) {
 
 // Remote control details arrive with the requests of the session owner
 void AirPlayHub::on_remote_target(const ::airplay::RemoteTarget &target) {
+  SlowCallLog slow_call(LOG_STR_LITERAL("Remote control details"));
   xSemaphoreTake(this->lock_, portMAX_DELAY);
   const bool changed =
       std::strcmp(this->remote_.target.dacp_id, target.dacp_id) != 0 || this->remote_.target.address != target.address;
@@ -437,12 +465,17 @@ void AirPlayHub::on_remote_target(const ::airplay::RemoteTarget &target) {
 
 #ifdef USE_AIRPLAY_ARTWORK
 bool AirPlayHub::on_artwork_begin(::airplay::ArtworkFormat format, size_t size) {
+  SlowCallLog slow_call(LOG_STR_LITERAL("Cover start"));
   return this->artwork_image_->artwork_begin(format == ::airplay::ArtworkFormat::PNG, size);
 }
 void AirPlayHub::on_artwork_data(const uint8_t *data, size_t length) {
+  SlowCallLog slow_call(LOG_STR_LITERAL("Cover data"));
   this->artwork_image_->artwork_data(data, length);
 }
-void AirPlayHub::on_artwork_end(bool complete) { this->artwork_image_->artwork_end(complete); }
+void AirPlayHub::on_artwork_end(bool complete) {
+  SlowCallLog slow_call(LOG_STR_LITERAL("Cover end"));
+  this->artwork_image_->artwork_end(complete);
+}
 void AirPlayHub::on_artwork_clear() { this->artwork_image_->artwork_clear(); }
 #endif
 

@@ -8,6 +8,7 @@
 
 #include <decoder/impl/esp_aac_dec.h>
 #include <esp_audio_dec.h>
+#include <esp_heap_caps.h>
 
 #include <algorithm>
 #include <cinttypes>
@@ -46,12 +47,18 @@ bool AirPlayAacDecoder::open_() {
   // Raw frames get an ADTS header, as airplay-esp32 does with this decoder
   config.no_adts_header = false;
   config.aac_plus_enable = false;
+  const size_t internal_before = heap_caps_get_free_size(MALLOC_CAP_INTERNAL);
+  const size_t psram_before = heap_caps_get_free_size(MALLOC_CAP_SPIRAM);
   const esp_audio_err_t err = esp_aac_dec_open(&config, sizeof(config), &this->decoder_);
   if (err != ESP_AUDIO_ERR_OK) {
     ESP_LOGE(TAG, "Failed to open the AAC decoder: %d", static_cast<int>(err));
     this->decoder_ = nullptr;
     return false;
   }
+  // Approximate: other tasks may allocate meanwhile
+  ESP_LOGD(TAG, "Decoder opened: %d bytes of internal RAM, %d bytes of PSRAM",
+           static_cast<int>(internal_before) - static_cast<int>(heap_caps_get_free_size(MALLOC_CAP_INTERNAL)),
+           static_cast<int>(psram_before) - static_cast<int>(heap_caps_get_free_size(MALLOC_CAP_SPIRAM)));
   return true;
 }
 

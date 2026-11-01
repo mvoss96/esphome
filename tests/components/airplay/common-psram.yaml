@@ -16,7 +16,7 @@ speaker:
 airplay:
   task_stack_in_psram: true
   airplay2: true
-  airplay2_features: 0x1E040405C4A00
+  airplay2_features: 0x1E140405C4A00
 
 # Synchronized playback with the default buffer for boards with PSRAM
 media_source:

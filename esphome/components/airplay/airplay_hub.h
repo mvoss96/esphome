@@ -101,6 +101,12 @@ class AirPlayHub final : public Component, public ::airplay::AudioSink, public :
   void request_output_restart();
   /// Ends the session, e.g. when another source takes over the speaker. Pauses the sender first.
   void request_disconnect();
+  /// @brief Pauses an AirPlay 2 sender and keeps its session, so that it can resume here.
+  /// @return false if the sender cannot be paused this way (AirPlay 1).
+  bool pause_sender() {
+    return this->receiver_ != nullptr &&
+           this->receiver_->request_sender_command(::airplay::SenderCommand::SENDER_COMMAND_PAUSE);
+  }
   void send_remote_request(uint8_t request);
   /// The speaker volume changed; moves the sender's volume slider along unless the change came from the sender
   void set_speaker_volume(float volume);

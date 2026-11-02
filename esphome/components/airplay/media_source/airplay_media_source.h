@@ -42,6 +42,10 @@ class AirPlayMediaSource final : public AirPlayChild, public media_source::Media
  protected:
   audio::AudioStreamInfo stream_info_{16, ::airplay::NUM_CHANNELS, ::airplay::SAMPLE_RATE};
   bool play_requested_{false};
+  // Stopped by the player while an AirPlay 2 sender stays connected, paused: playback only takes over again once the
+  // sender resumes
+  bool stopped_{false};
+  bool sender_paused_{false};
 };
 
 }  // namespace esphome::airplay_

@@ -23,6 +23,22 @@ void AirPlayMediaSource::loop() {
   const ::airplay::SessionState desired = this->parent_->get_session_state();
   const media_source::MediaSourceState state = this->get_state();
 
+  if (this->stopped_) {
+    // Waits for the sender to pause and play again, e.g. when Spotify is started again on the iPhone
+    if (desired == ::airplay::SessionState::NONE) {
+      this->stopped_ = false;
+    } else if (desired == ::airplay::SessionState::PAUSED) {
+      this->sender_paused_ = true;
+    } else if (this->sender_paused_) {
+      ESP_LOGD(TAG, "The sender plays again");
+      this->stopped_ = false;
+    }
+    if (this->stopped_) {
+      this->disable_loop();
+      return;
+    }
+  }
+
   switch (desired) {
     case ::airplay::SessionState::NONE:
       this->play_requested_ = false;
@@ -83,7 +99,18 @@ void AirPlayMediaSource::handle_command(media_source::MediaSourceCommand command
       if (this->parent_->get_session_state() == ::airplay::SessionState::NONE) {
         this->play_requested_ = false;
         this->set_state_(media_source::MediaSourceState::IDLE);
-      } else if (!this->parent_->is_failed()) {
+      } else if (this->parent_->is_failed()) {
+        return;
+      } else if (this->parent_->pause_sender()) {
+        // AirPlay 2: iOS keeps its route to a receiver that disconnects and does not connect again by itself. Paused
+        // instead, the sender stays connected and can resume here.
+        ESP_LOGI(TAG, "Pausing the sender");
+        this->stopped_ = true;
+        this->sender_paused_ = this->parent_->get_session_state() == ::airplay::SessionState::PAUSED;
+        this->play_requested_ = false;
+        this->cancel_timeout(PLAY_RETRY_ID);
+        this->set_state_(media_source::MediaSourceState::IDLE);
+      } else {
         this->parent_->request_disconnect();
       }
       return;

@@ -46,6 +46,7 @@ class AirPlayMediaSource final : public AirPlayChild, public media_source::Media
   // sender resumes
   bool stopped_{false};
   bool sender_paused_{false};
+  uint32_t stopped_address_{0};  // The sender that was stopped; when it comes back on its own it stays stopped
 };
 
 }  // namespace esphome::airplay_

@@ -200,6 +200,8 @@ class AirPlayHub final : public Component, public ::airplay::AudioSink, public :
   std::atomic<bool> session_changed_{false};
   std::atomic<uint8_t> remote_requests_{0};
   std::atomic<float> remote_volume_{0.0f};
+  // The speaker volume, 0 to 1; below 0 until the media player reports it. Main loop only.
+  float device_volume_{-1.0f};
   // Volume last set by the sender, 0 to 1, to avoid sending it back; negative without a session
   std::atomic<float> sender_volume_{-1.0f};
   // Volume the sender last reported, including the steps of an adjustment from here; negative without a session

@@ -149,6 +149,9 @@ void AirPlayHub::setup() {
   config.allocate = allocate_buffer;
   config.deallocate = heap_caps_free;
   this->receiver_ = std::make_unique<::airplay::Receiver>(config, this->crypto_, this->runner_, *this, this);
+  // The media player may have restored its volume before
+  if (this->device_volume_ >= 0.0f)
+    this->receiver_->set_device_volume(this->device_volume_);
   if (!this->receiver_->begin()) {
     ESP_LOGE(TAG, "Failed to allocate buffers");
     this->mark_failed();
@@ -360,6 +363,10 @@ void AirPlayHub::send_remote_request(uint8_t request) {
 }
 
 void AirPlayHub::set_speaker_volume(float volume) {
+  // Offered to AirPlay 2 senders as the volume to start with
+  this->device_volume_ = volume;
+  if (this->receiver_ != nullptr)
+    this->receiver_->set_device_volume(volume);
   float sender_volume = this->sender_volume_.load(std::memory_order_relaxed);
   if (sender_volume < 0.0f || std::fabs(volume - sender_volume) < VOLUME_CHANGE_THRESHOLD)
     return;

@@ -101,17 +101,25 @@ class AirPlayHub final : public Component, public ::airplay::AudioSink, public :
   void request_output_restart();
   /// Ends the session, e.g. when another source takes over the speaker. Pauses the sender first.
   void request_disconnect();
-  /// @brief Pauses an AirPlay 2 sender and keeps its session, so that it can resume here.
-  /// @return false if the sender cannot be paused this way (AirPlay 1).
   /// IPv4 address (network byte order) of the sender that owns the session, 0 if none. THREAD CONTEXT: any
   uint32_t get_sender_address() const { return this->receiver_ != nullptr ? this->receiver_->sender_address() : 0; }
-  bool pause_sender() {
-    return this->receiver_ != nullptr &&
-           this->receiver_->request_sender_command(::airplay::SenderCommand::SENDER_COMMAND_PAUSE);
+  /// @brief Pauses an AirPlay 2 sender and keeps its session, so that it can resume here.
+  /// @return false if the sender cannot be paused this way (AirPlay 1).
+  bool pause_sender();
+  /// Drops the sender's audio as it arrives while its session stays, e.g. while another source has the speaker
+  void set_audio_held(bool held) {
+    if (this->receiver_ != nullptr)
+      this->receiver_->set_audio_held(held);
   }
   void send_remote_request(uint8_t request);
-  /// The speaker volume changed; moves the sender's volume slider along unless the change came from the sender
-  void set_speaker_volume(float volume);
+  /// @brief The speaker volume changed. Moves the sender's volume slider along if `to_sender` and the change did not
+  /// come from the sender; a sender that does not have the speaker is left alone.
+  void set_speaker_volume(float volume, bool to_sender);
+  /// Moves the sender's volume slider to the speaker volume, e.g. when the sender gets the speaker back
+  void send_speaker_volume() {
+    if (this->device_volume_ >= 0.0f)
+      this->set_speaker_volume(this->device_volume_, true);
+  }
   /// THREAD CONTEXT: speaker playback callback
   void notify_played(uint32_t frames, int64_t timestamp);
 
@@ -154,6 +162,8 @@ class AirPlayHub final : public Component, public ::airplay::AudioSink, public :
 
   // Remote control task
   void handle_remote_requests_(uint8_t requests);
+  /// THREAD CONTEXT: any. Queues remote control (DACP) requests and wakes the remote control task.
+  void queue_remote_requests_(uint8_t requests);
   /// @return false if the sender could not be reached
   bool send_command_(const RemoteState &remote, const char *command);
   bool adjust_volume_(const RemoteState &remote);

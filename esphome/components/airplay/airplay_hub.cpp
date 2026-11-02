@@ -357,16 +357,36 @@ void AirPlayHub::send_remote_request(uint8_t request) {
     if (request == 0)
       return;
   }
-  this->remote_requests_.fetch_or(request, std::memory_order_acq_rel);
+  this->queue_remote_requests_(request);
+}
+
+void AirPlayHub::queue_remote_requests_(uint8_t requests) {
+  this->remote_requests_.fetch_or(requests, std::memory_order_acq_rel);
   if (this->remote_task_.is_created())
     xTaskNotifyGive(this->remote_task_.get_handle());
 }
 
-void AirPlayHub::set_speaker_volume(float volume) {
+bool AirPlayHub::pause_sender() {
+  if (this->receiver_ == nullptr ||
+      !this->receiver_->request_sender_command(::airplay::SenderCommand::SENDER_COMMAND_PAUSE))
+    return false;
+  // Also through remote control: Music Assistant reads the event connection only of Apple devices, but takes DACP
+  xSemaphoreTake(this->lock_, portMAX_DELAY);
+  const bool has_remote = this->remote_.session_active && this->remote_.target.dacp_id[0] != '\0' &&
+                          this->remote_.target.active_remote[0] != '\0';
+  xSemaphoreGive(this->lock_);
+  if (has_remote)
+    this->queue_remote_requests_(REMOTE_REQUEST_PAUSE);
+  return true;
+}
+
+void AirPlayHub::set_speaker_volume(float volume, bool to_sender) {
   // Offered to AirPlay 2 senders as the volume to start with
   this->device_volume_ = volume;
   if (this->receiver_ != nullptr)
     this->receiver_->set_device_volume(volume);
+  if (!to_sender)
+    return;
   float sender_volume = this->sender_volume_.load(std::memory_order_relaxed);
   if (sender_volume < 0.0f || std::fabs(volume - sender_volume) < VOLUME_CHANGE_THRESHOLD)
     return;

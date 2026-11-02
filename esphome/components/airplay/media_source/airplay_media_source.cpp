@@ -2,7 +2,10 @@
 
 #ifdef USE_ESP32
 
+#include "esphome/core/application.h"
 #include "esphome/core/log.h"
+
+#include <algorithm>
 
 namespace esphome::airplay_ {
 
@@ -17,6 +20,8 @@ static constexpr uint32_t PAUSE_CHECK_ID = 1;
 /// A sender that has not paused this long after being asked to is disconnected instead. A realtime sender that
 /// pauses just stops sending, which the receiver notices after 3 s.
 static constexpr uint32_t PAUSE_CHECK_MS = 6000;
+/// A sender that was disconnected and connects again within this time did so by itself (Music Assistant does)
+static constexpr uint32_t AUTO_RECONNECT_MS = 30000;
 
 void AirPlayMediaSource::setup() { this->disable_loop(); }
 
@@ -27,19 +32,32 @@ void AirPlayMediaSource::loop() {
   const ::airplay::SessionState desired = this->parent_->get_session_state();
   const media_source::MediaSourceState state = this->get_state();
 
-  if (this->stopped_) {
-    // Waits for the sender to pause and play again, e.g. when Spotify is started again on the iPhone. A sender that
-    // was disconnected and connects again by itself (Music Assistant) stays stopped too; another device that starts
-    // playing takes over.
+  if (this->claim_ != SpeakerClaim::SPEAKER_CLAIM_OWNER) {
+    // The last start wins: another sender that starts playing, or this one when it plays again after a pause
     if (desired == ::airplay::SessionState::NONE) {
-      this->sender_paused_ = false;
+      if (this->claim_ == SpeakerClaim::SPEAKER_CLAIM_WAITING) {
+        // A paused sender that left: when it connects again, it was started again
+        this->set_claim_(SpeakerClaim::SPEAKER_CLAIM_OWNER);
+      } else if (this->declined_end_ms_ == 0) {
+        this->declined_end_ms_ = std::max<uint32_t>(App.get_loop_component_start_time(), 1);
+      }
     } else if (desired == ::airplay::SessionState::PAUSED) {
-      this->sender_paused_ = true;
-    } else if (this->sender_paused_ || this->parent_->get_sender_address() != this->stopped_address_) {
+      this->set_claim_(SpeakerClaim::SPEAKER_CLAIM_WAITING);
+    } else if (this->claim_ == SpeakerClaim::SPEAKER_CLAIM_WAITING ||
+               this->parent_->get_sender_address() != this->declined_address_) {
       ESP_LOGD(TAG, "A sender plays again");
-      this->stopped_ = false;
+      this->set_claim_(SpeakerClaim::SPEAKER_CLAIM_OWNER);
+    } else if (this->declined_end_ms_ != 0) {
+      // The declined sender connected again and plays: started again, unless it did so right away by itself
+      if (App.get_loop_component_start_time() - this->declined_end_ms_ >= AUTO_RECONNECT_MS) {
+        ESP_LOGD(TAG, "A sender plays again");
+        this->set_claim_(SpeakerClaim::SPEAKER_CLAIM_OWNER);
+      } else {
+        ESP_LOGD(TAG, "The sender connected again by itself; it stays without the speaker");
+        this->declined_end_ms_ = 0;
+      }
     }
-    if (this->stopped_) {
+    if (this->claim_ != SpeakerClaim::SPEAKER_CLAIM_OWNER) {
       this->disable_loop();
       return;
     }
@@ -88,8 +106,11 @@ bool AirPlayMediaSource::play_uri(const std::string &uri) {
     ESP_LOGD(TAG, "No AirPlay sender is connected");
     return true;
   }
+  // Chosen on the device: the sender gets the speaker back
+  this->set_claim_(SpeakerClaim::SPEAKER_CLAIM_OWNER);
   // The orchestrator restarts its count of played frames right after this call
   this->parent_->request_output_restart();
+  this->parent_->send_speaker_volume();
   // Report playing first even when paused: the orchestrator only makes a source active when it starts playing
   this->set_state_(media_source::MediaSourceState::PLAYING);
   if (desired == ::airplay::SessionState::PAUSED)
@@ -107,27 +128,8 @@ void AirPlayMediaSource::handle_command(media_source::MediaSourceCommand command
         this->set_state_(media_source::MediaSourceState::IDLE);
       } else if (this->parent_->is_failed()) {
         return;
-      } else if (this->parent_->pause_sender()) {
-        // AirPlay 2: iOS keeps its route to a receiver that disconnects and does not connect again by itself. Paused
-        // instead, the sender stays connected and can resume here.
-        ESP_LOGI(TAG, "Pausing the sender");
-        this->stopped_ = true;
-        this->sender_paused_ = this->parent_->get_session_state() == ::airplay::SessionState::PAUSED;
-        this->stopped_address_ = this->parent_->get_sender_address();
-        this->play_requested_ = false;
-        this->cancel_timeout(PLAY_RETRY_ID);
-        this->set_state_(media_source::MediaSourceState::IDLE);
-        this->set_timeout(PAUSE_CHECK_ID, PAUSE_CHECK_MS, [this]() {
-          if (this->stopped_ && !this->sender_paused_ &&
-              this->parent_->get_session_state() != ::airplay::SessionState::NONE) {
-            ESP_LOGI(TAG, "The sender did not pause, disconnecting it");
-            // Still stopped: a paused sender that is next takes the speaker only once it plays again
-            this->sender_paused_ = false;
-            this->parent_->request_disconnect();
-          }
-        });
       } else {
-        this->parent_->request_disconnect();
+        this->decline_sender_();
       }
       return;
     case media_source::MediaSourceCommand::PLAY:
@@ -150,7 +152,53 @@ void AirPlayMediaSource::handle_command(media_source::MediaSourceCommand command
 }
 
 // THREAD CONTEXT: Main loop
-void AirPlayMediaSource::notify_volume_changed(float volume) { this->parent_->set_speaker_volume(volume); }
+void AirPlayMediaSource::decline_sender_() {
+  if (!this->parent_->pause_sender()) {
+    // AirPlay 1
+    this->parent_->request_disconnect();
+    return;
+  }
+  // AirPlay 2: iOS keeps its route to a receiver that disconnects and does not connect again by itself. Paused
+  // instead, the sender stays connected and can resume here.
+  ESP_LOGI(TAG, "Pausing the sender");
+  this->declined_address_ = this->parent_->get_sender_address();
+  this->declined_end_ms_ = 0;
+  this->set_claim_(this->parent_->get_session_state() == ::airplay::SessionState::PAUSED
+                       ? SpeakerClaim::SPEAKER_CLAIM_WAITING
+                       : SpeakerClaim::SPEAKER_CLAIM_DECLINED);
+  this->play_requested_ = false;
+  this->cancel_timeout(PLAY_RETRY_ID);
+  this->set_state_(media_source::MediaSourceState::IDLE);
+  this->set_timeout(PAUSE_CHECK_ID, PAUSE_CHECK_MS, [this]() { this->check_pause_(); });
+}
+
+// THREAD CONTEXT: Main loop
+void AirPlayMediaSource::check_pause_() {
+  if (this->claim_ != SpeakerClaim::SPEAKER_CLAIM_DECLINED || this->declined_end_ms_ != 0 ||
+      this->parent_->get_session_state() == ::airplay::SessionState::NONE)
+    return;
+  ESP_LOGI(TAG, "The sender did not pause, disconnecting it");
+  this->parent_->request_disconnect();
+}
+
+// THREAD CONTEXT: Main loop
+void AirPlayMediaSource::set_claim_(SpeakerClaim claim) {
+  if (claim == this->claim_)
+    return;
+  this->claim_ = claim;
+  const bool owner = claim == SpeakerClaim::SPEAKER_CLAIM_OWNER;
+  // A sender without the speaker stays connected, but its audio is dropped as it arrives
+  this->parent_->set_audio_held(!owner);
+  if (owner) {
+    this->declined_end_ms_ = 0;
+    this->cancel_timeout(PAUSE_CHECK_ID);
+  }
+}
+
+// THREAD CONTEXT: Main loop. The player tells every source; only the sender that has the speaker follows it.
+void AirPlayMediaSource::notify_volume_changed(float volume) {
+  this->parent_->set_speaker_volume(volume, this->get_state() != media_source::MediaSourceState::IDLE);
+}
 
 // THREAD CONTEXT: Speaker playback callback
 void AirPlayMediaSource::notify_audio_played(uint32_t frames, int64_t timestamp) {

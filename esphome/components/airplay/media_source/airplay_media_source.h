@@ -40,13 +40,29 @@ class AirPlayMediaSource final : public AirPlayChild, public media_source::Media
   void on_sender_mute(bool muted) { this->request_mute_(muted); }
 
  protected:
+  /// Whether the AirPlay sender may have the speaker
+  enum class SpeakerClaim : uint8_t {
+    /// It may: its session takes the speaker when it starts playing. Also when no sender is connected.
+    SPEAKER_CLAIM_OWNER,
+    /// Another source took the speaker and the sender is paused: it takes the speaker back when it plays again
+    SPEAKER_CLAIM_WAITING,
+    /// Another source took the speaker and the sender has not paused, or was disconnected for it. It takes the
+    /// speaker back only after it paused and plays again; connecting again by itself does not count.
+    SPEAKER_CLAIM_DECLINED,
+  };
+
+  void set_claim_(SpeakerClaim claim);
+  /// Takes the speaker away from the sender and pauses it, or disconnects a sender that cannot be paused
+  void decline_sender_();
+  void check_pause_();
+
   audio::AudioStreamInfo stream_info_{16, ::airplay::NUM_CHANNELS, ::airplay::SAMPLE_RATE};
   bool play_requested_{false};
-  // Stopped by the player while an AirPlay 2 sender stays connected, paused: playback only takes over again once the
-  // sender resumes
-  bool stopped_{false};
-  bool sender_paused_{false};
-  uint32_t stopped_address_{0};  // The sender that was stopped; when it comes back on its own it stays stopped
+  SpeakerClaim claim_{SpeakerClaim::SPEAKER_CLAIM_OWNER};
+  // The sender that lost the speaker; any other sender that starts playing takes it
+  uint32_t declined_address_{0};
+  // When a declined sender disconnected; 0 while it is connected
+  uint32_t declined_end_ms_{0};
 };
 
 }  // namespace esphome::airplay_

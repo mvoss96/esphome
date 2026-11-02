@@ -13,6 +13,9 @@ static constexpr char PLAY_URI[] = "airplay://current";
 
 static constexpr uint32_t PLAY_RETRY_ID = 0;
 static constexpr uint32_t PLAY_RETRY_MS = 3000;
+static constexpr uint32_t PAUSE_CHECK_ID = 1;
+/// A sender that has not paused this long after being asked to (e.g. Music Assistant) is disconnected instead
+static constexpr uint32_t PAUSE_CHECK_MS = 3000;
 
 void AirPlayMediaSource::setup() { this->disable_loop(); }
 
@@ -110,6 +113,14 @@ void AirPlayMediaSource::handle_command(media_source::MediaSourceCommand command
         this->play_requested_ = false;
         this->cancel_timeout(PLAY_RETRY_ID);
         this->set_state_(media_source::MediaSourceState::IDLE);
+        this->set_timeout(PAUSE_CHECK_ID, PAUSE_CHECK_MS, [this]() {
+          if (this->stopped_ && !this->sender_paused_ &&
+              this->parent_->get_session_state() != ::airplay::SessionState::NONE) {
+            ESP_LOGI(TAG, "The sender did not pause, disconnecting it");
+            this->stopped_ = false;
+            this->parent_->request_disconnect();
+          }
+        });
       } else {
         this->parent_->request_disconnect();
       }
